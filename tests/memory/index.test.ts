@@ -1,0 +1,108 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { MemoryStore } from "../../memory/index.js";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readdir } from "node:fs/promises";
+
+const NOW = () => "2026-06-14T00:00:00Z";
+
+describe("MemoryStore", () => {
+  let tmpDir: string;
+  let memory: MemoryStore;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "mem-test-"));
+    memory = new MemoryStore({ root: tmpDir });
+  });
+
+  afterEach(async () => {
+    try { await rm(tmpDir, { recursive: true, force: true }); } catch {}
+  });
+
+  it("writes and reads current state", async () => {
+    await memory.writeToCurrent("project_state.json", '{"goal":"test"}');
+    const data = await memory.readCurrent("project_state.json");
+    expect(data).toBe('{"goal":"test"}');
+  });
+
+  it("returns undefined for missing current file", async () => {
+    const data = await memory.readCurrent("nonexistent.json");
+    expect(data).toBeUndefined();
+  });
+
+  it("writes to staging and commits to current", async () => {
+    await memory.writeToStaging("diff.txt", "patch content");
+    const { promoted, snapshotId } = await memory.commitStaging("task-1", NOW);
+    expect(promoted).toContain("diff.txt");
+    expect(snapshotId).toBeTruthy();
+    const current = await memory.readCurrent("diff.txt");
+    expect(current).toBe("patch content");
+  });
+
+  it("clears staging on commit", async () => {
+    await memory.writeToStaging("a.txt", "aaa");
+    await memory.commitStaging("task-1", NOW);
+    const stagingFiles = await readdir(join(tmpDir, "staging")).catch(() => []);
+    expect(stagingFiles.length).toBe(0);
+  });
+
+  it("clears staging on rollback", async () => {
+    await memory.writeToStaging("b.txt", "bbb");
+    await memory.clearStaging();
+    const stagingFiles = await readdir(join(tmpDir, "staging")).catch(() => []);
+    expect(stagingFiles.length).toBe(0);
+  });
+
+  it("appends task records", async () => {
+    await memory.appendTask({ taskId: "T-1", status: "completed", decision: "COMMIT", at: NOW() });
+    await memory.appendTask({ taskId: "T-2", status: "completed", decision: "COMMIT", at: NOW() });
+    const c = memory.count();
+    expect(c.tasks).toBe(2);
+  });
+
+  it("appends decision records", async () => {
+    await memory.appendDecision({ id: "d-1", decision: "COMMIT", reason: "ok", at: NOW() });
+    const c = memory.count();
+    expect(c.decisions).toBe(1);
+  });
+
+  it("appends incident records", async () => {
+    await memory.appendIncident({ id: "inc-1", taskId: "T-1", reason: "scope denied", at: NOW() });
+    const c = memory.count();
+    expect(c.incidents).toBe(1);
+  });
+
+  it("creates snapshot before commit", async () => {
+    await memory.writeToCurrent("project_state.json", '{"goal":"v1"}');
+    await memory.writeToStaging("diff.txt", "change");
+    const { snapshotId } = await memory.commitStaging("task-1", NOW);
+    expect(snapshotId).toMatch(/^snap_/);
+    const c = memory.count();
+    expect(c.snapshots).toBe(1);
+  });
+
+  it("recentTasks returns last N tasks", async () => {
+    for (let i = 0; i < 5; i++) {
+      await memory.appendTask({ taskId: `T-${i}`, status: "completed", decision: "COMMIT", at: NOW() });
+    }
+    const recent = memory.recentTasks(3);
+    expect(recent.length).toBe(3);
+  });
+
+  it("recentDecisions returns last N decisions", async () => {
+    for (let i = 0; i < 5; i++) {
+      await memory.appendDecision({ id: `d-${i}`, decision: "COMMIT", reason: "ok", at: NOW() });
+    }
+    const recent = memory.recentDecisions(3);
+    expect(recent.length).toBe(3);
+  });
+
+  it("persists records to disk", async () => {
+    await memory.appendTask({ taskId: "T-1", status: "completed", decision: "COMMIT", at: NOW() });
+    const files = await readdir(join(tmpDir, "tasks"));
+    expect(files.length).toBe(1);
+    expect(files[0]).toMatch(/^task_/);
+  });
+});
