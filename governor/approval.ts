@@ -1,10 +1,32 @@
-// AIOS Core — Approval.
-// Per Charter §3 + §7: AUTO/MANUAL two-level approval.
-// Approval is a Plan property, not a state.
-// AUTO: low risk, small changes → runtime proceeds without human.
-// MANUAL: config, delete, migration, high risk → runtime pauses for human.
+// AIOS Core — Approval gateway.
+// Per Charter §8: AUTO (risk ≤ threshold) vs MANUAL (human decides).
+// v1.1: ACS-aware. MANUAL decisions are flagged in audit.
+// AUTO decisions are logged to both AIOS audit and ACS audit trail.
 
 import type { Plan, Approval } from "../kernel/schema/index.js";
+import type { AcsClient } from "./acs_client.js";
+
+export interface ApprovalConfig {
+  autoThreshold: number;
+  protectedPaths: string[];
+}
+
+export const DEFAULT_APPROVAL_CONFIG: ApprovalConfig = {
+  autoThreshold: 50,
+  protectedPaths: [".env", "secrets/", ".claude/", "CLAUDE.md"],
+};
+
+export interface ApprovalResult {
+  approved: boolean;
+  level: Approval;
+  reason: string;
+  acsLocked: boolean;
+}
+
+export interface ApprovalDeps {
+  acs?: AcsClient;
+  config?: ApprovalConfig;
+}
 
 export function inferApproval(plan: Plan): Approval {
   if (plan.risk === "high") return "MANUAL";
@@ -22,13 +44,61 @@ function isDestructiveAction(plan: Plan): boolean {
   return plan.steps.some((s) => s.action === "delete" || s.action === "migrate");
 }
 
-/** Check if a plan requires human approval and the human has confirmed. */
+/** ACS-aware approval check.
+ *  Returns approved=true for AUTO plans (unless ACS is locked).
+ *  Returns approved=false for MANUAL plans that need human confirmation. */
+export async function checkApprovalWithAcs(
+  plan: Plan,
+  acs?: AcsClient,
+  askHuman?: (plan: Plan) => Promise<boolean>,
+): Promise<ApprovalResult> {
+  const acsLocked = acs ? await acs.isLocked() : false;
+
+  if (acsLocked) {
+    return {
+      approved: false,
+      level: "MANUAL",
+      reason: "ACS is locked — all operations denied until unlocked",
+      acsLocked: true,
+    };
+  }
+
+  // Check protected paths
+  const protectedPaths = DEFAULT_APPROVAL_CONFIG.protectedPaths;
+  const touchesProtected = plan.files.some((f) => protectedPaths.some((p) => f.includes(p)));
+  if (touchesProtected && plan.approval === "AUTO") {
+    return {
+      approved: false,
+      level: "MANUAL",
+      reason: "plan touches protected paths — overrides AUTO to MANUAL",
+      acsLocked: false,
+    };
+  }
+
+  if (plan.approval === "AUTO") {
+    return { approved: true, level: "AUTO", reason: "auto-approved", acsLocked: false };
+  }
+
+  // MANUAL — need human
+  if (!askHuman) {
+    return { approved: false, level: "MANUAL", reason: "manual approval required but no askHuman provided", acsLocked: false };
+  }
+
+  const confirmed = await askHuman(plan);
+  return {
+    approved: confirmed,
+    level: "MANUAL",
+    reason: confirmed ? "human approved" : "human denied",
+    acsLocked: false,
+  };
+}
+
+/** Original checkApproval (backward compatible, no ACS). */
 export async function checkApproval(
   plan: Plan,
   askHuman?: (plan: Plan) => Promise<boolean>,
 ): Promise<{ ok: boolean; reason?: string }> {
   if (plan.approval === "AUTO") return { ok: true };
-  // MANUAL
   if (!askHuman) return { ok: false, reason: "manual approval required but no askHuman provided" };
   const confirmed = await askHuman(plan);
   if (!confirmed) return { ok: false, reason: "manual approval denied" };

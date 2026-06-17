@@ -59,11 +59,13 @@ describe("ScopeValidator", () => {
 
   it("supports custom policies", () => {
     const sv = new ScopeValidator({
-      allowedPaths: ["src/**"],
-      deniedPaths: ["src/secret/**"],
-      allowedCommands: ["node"],
-      deniedCommands: [],
-      deniedFileTypes: [],
+      policy: {
+        allowedPaths: ["src/**"],
+        deniedPaths: ["src/secret/**"],
+        allowedCommands: ["node"],
+        deniedCommands: [],
+        deniedFileTypes: [],
+      },
     });
     expect(sv.validatePath("src/app.ts")).toBe(true);
     expect(sv.validatePath("src/secret/vault.ts")).toBe(false);

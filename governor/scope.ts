@@ -1,8 +1,13 @@
 // AIOS Core — Scope validator.
 // Per Charter §7: path allow/deny + command allow/deny + file type restrictions.
 // Governor does NOT contain business logic.
+//
+// v1.1: ACS-aware. When an AcsClient is provided, scope is loaded from ACS
+// runtime config (ACTIVE_TASK.json) and violations are checked before validation.
+// Without AcsClient, falls back to DEFAULT_POLICY (backwards compatible).
 
 import type { Plan } from "../kernel/schema/index.js";
+import type { AcsClient } from "./acs_client.js";
 
 export interface ScopePolicy {
   allowedPaths: string[];
@@ -25,8 +30,73 @@ export const DEFAULT_POLICY: ScopePolicy = {
   deniedFileTypes: [".pem", ".key", ".p12", ".keystore", ".jks"],
 };
 
+// ACS-denied paths (protected zones that ACS enforces at hook level).
+export const ACS_DENIED_PATHS = [
+  ".claude/audit/",
+  ".claude/hooks/",
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+];
+
+export interface ScopeValidatorDeps {
+  acs?: AcsClient;
+  policy?: ScopePolicy;
+}
+
 export class ScopeValidator {
-  constructor(public readonly policy: ScopePolicy = DEFAULT_POLICY) {}
+  public readonly policy: ScopePolicy;
+  private readonly acs: AcsClient | null;
+
+  constructor(deps?: ScopeValidatorDeps) {
+    this.policy = deps?.policy ?? DEFAULT_POLICY;
+    this.acs = deps?.acs ?? null;
+  }
+
+  /** Check if ACS is locked. If locked, all writes are denied. */
+  async isAcsLocked(): Promise<boolean> {
+    if (!this.acs) return false;
+    return this.acs.isLocked();
+  }
+
+  /** Get ACS-enforced allowed directories. */
+  async getAcsScope(): Promise<string[]> {
+    if (!this.acs) return this.policy.allowedPaths;
+    return this.acs.getScope();
+  }
+
+  /** Validate a plan against both local policy and ACS scope. */
+  async validatePlanWithAcs(plan: Plan): Promise<{ ok: boolean; reason?: string }> {
+    // 1. ACS lock check
+    if (await this.isAcsLocked()) {
+      return { ok: false, reason: "ACS is locked — all writes denied" };
+    }
+
+    // 2. Local policy check (synchronous)
+    if (!this.validatePlan(plan)) {
+      return { ok: false, reason: "plan violates local scope policy" };
+    }
+
+    // 3. ACS scope check (async)
+    if (this.acs) {
+      const acsScope = await this.getAcsScope();
+      for (const file of plan.files) {
+        const inAcsScope = acsScope.some((dir) => file.startsWith(dir));
+        if (!inAcsScope) {
+          return { ok: false, reason: `ACS scope violation: ${file} not in ACS allowed directories` };
+        }
+      }
+
+      // 4. ACS protected paths
+      for (const file of plan.files) {
+        const isProtected = ACS_DENIED_PATHS.some((p) => file.includes(p));
+        if (isProtected) {
+          return { ok: false, reason: `ACS protected path: ${file}` };
+        }
+      }
+    }
+
+    return { ok: true };
+  }
 
   validatePlan(plan: Plan): boolean {
     return plan.files.every((f) => this.validatePath(f) && this.validateFileType(f));
@@ -34,16 +104,14 @@ export class ScopeValidator {
 
   validatePath(path: string): boolean {
     if (this.matchesAny(path, this.policy.deniedPaths)) return false;
+    if (ACS_DENIED_PATHS.some((p) => path.includes(p))) return false;
     if (this.policy.allowedPaths.length === 0) return false;
     return this.matchesAny(path, this.policy.allowedPaths);
   }
 
   validateCommand(cmd: string): boolean {
-    // Shell control operators (|, &&, ||, ;) allow command chaining.
-    // We must validate each segment independently to prevent bypasses like "git; rm -rf /".
     const DANGEROUS_SEPARATORS = /[\|;&]/;
     if (DANGEROUS_SEPARATORS.test(cmd)) {
-      // Split on control operators and validate each segment
       const segments = cmd.split(DANGEROUS_SEPARATORS).map((s) => s.trim()).filter((s) => s.length > 0);
       return segments.every((seg) => this.validateSingleCommand(seg));
     }
@@ -51,7 +119,6 @@ export class ScopeValidator {
   }
 
   private validateSingleCommand(cmd: string): boolean {
-    // Strip environment variable assignments (e.g. "FOO=bar git push")
     const stripped = cmd.replace(/^\s*(\w+=\S+\s*)+/, "").trim();
     const head = stripped.split(/\s+/)[0] ?? "";
     if (this.matchesAny(head, this.policy.deniedCommands)) return false;
