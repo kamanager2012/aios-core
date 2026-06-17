@@ -1,14 +1,57 @@
 {
   "name": "aios-core",
-  "version": "0.1.0",
-  "private": true,
-  "description": "AIOS Core — Project Agent Runtime",
+  "version": "1.0.0",
+  "description": "AIOS Core — Project Agent Runtime. Single-agent software engineering execution kernel with project memory, governance, and rollback.",
   "type": "module",
+  "main": "kernel/runtime.js",
+  "types": "kernel/runtime.ts",
+  "bin": {
+    "aios": "cli/aios.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./kernel/runtime.ts",
+      "default": "./kernel/runtime.ts"
+    },
+    "./kernel": {
+      "types": "./kernel/schema/index.ts",
+      "default": "./kernel/schema/index.ts"
+    },
+    "./governor": {
+      "types": "./governor/scope.ts",
+      "default": "./governor/scope.ts"
+    },
+    "./memory": {
+      "types": "./memory/index.ts",
+      "default": "./memory/index.ts"
+    }
+  },
+  "files": [
+    "kernel/",
+    "governor/",
+    "memory/",
+    "cli/"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "keywords": [
+    "aios",
+    "agent",
+    "runtime",
+    "governance",
+    "project-memory",
+    "software-engineering",
+    "execution-kernel"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jamesoldman/aios-core.git"
+  },
+  "homepage": "https://github.com/jamesoldman/aios-core#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
