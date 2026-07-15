@@ -65,6 +65,34 @@ export class AuditLog {
 
   constructor(deps?: AuditDeps) {
     this.deps = deps ?? null;
+    // Recover _seq from existing audit files on disk to prevent overwrites.
+    if (this.deps) {
+      this._recoverSeq().catch(() => {});
+    }
+  }
+
+  /** Scan existing audit files to find the max seq number. */
+  private async _recoverSeq(): Promise<void> {
+    if (!this.deps) return;
+    try {
+      const raw = await this.deps.memory.readCurrent("audit/_max_seq");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.seq === "number" && parsed.seq > this._seq) {
+          this._seq = parsed.seq;
+        }
+      }
+    } catch {
+      // No existing seq file — start from 0
+    }
+  }
+
+  /** Persist current _seq so it survives process restart. */
+  private async _persistSeq(): Promise<void> {
+    if (!this.deps) return;
+    try {
+      await this.deps.memory.writeToCurrent("audit/_max_seq", JSON.stringify({ seq: this._seq }));
+    } catch {}
   }
 
   async append(entry: AuditEntry): Promise<void> {
@@ -74,6 +102,7 @@ export class AuditLog {
     if (this.deps) {
       const path = `audit/entry_${String(this._seq).padStart(6, "0")}.json`;
       await this.deps.memory.writeToCurrent(path, JSON.stringify(seqEntry, null, 2));
+      await this._persistSeq();
     }
   }
 

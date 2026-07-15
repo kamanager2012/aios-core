@@ -57,6 +57,9 @@ export class MemoryStore {
   constructor(private config: MemoryConfig) {
     this.maxFile = config.maxFileBytes ?? DEFAULT_MAX_FILE;
     this.maxTotal = config.maxTotalBytes ?? DEFAULT_MAX_TOTAL;
+    // Recover counters and index from disk on startup.
+    // Prevents file name collisions and stale data after process restart.
+    this._initFromDisk().catch(() => {});
   }
 
   private subdir(name: string): string { return join(this.config.root, name); }
@@ -123,7 +126,9 @@ export class MemoryStore {
         const v = await this.readCurrent(f);
         if (v !== undefined) { try { current[f] = JSON.parse(v); } catch { current[f] = v; } }
       }
-    } catch {}
+    } catch {
+      console.warn(`[memory] snapshotCurrent: current/ dir not available for task ${taskId}`);
+    }
     const path = join(this.subdir("snapshots"), `${id}.json`);
     await this.ensureDir(dirname(path));
     await writeFile(path, JSON.stringify({ id, taskId, at: now(), current }, null, 2), "utf8");
@@ -136,8 +141,6 @@ export class MemoryStore {
     await this.ensureDir(dirname(path));
     await writeFile(path, JSON.stringify(record, null, 2), "utf8");
     this.index.tasks.set(record.taskId, record);
-    // Refresh index from disk to catch records promoted via commitStaging
-    await this.refreshIndex("tasks");
   }
 
   async appendDecision(record: MemoryDecisionRecord): Promise<void> {
@@ -146,7 +149,6 @@ export class MemoryStore {
     await this.ensureDir(dirname(path));
     await writeFile(path, JSON.stringify(record, null, 2), "utf8");
     this.index.decisions.set(record.id, record);
-    await this.refreshIndex("decisions");
   }
 
   async appendIncident(record: MemoryIncidentRecord): Promise<void> {
@@ -155,7 +157,6 @@ export class MemoryStore {
     await this.ensureDir(dirname(path));
     await writeFile(path, JSON.stringify(record, null, 2), "utf8");
     this.index.incidents.set(record.id, record);
-    await this.refreshIndex("incidents");
   }
 
   /** Reload index from disk files for a given collection. */
@@ -189,5 +190,43 @@ export class MemoryStore {
 
   count(): { tasks: number; decisions: number; incidents: number; snapshots: number } {
     return { tasks: this.counters.task, decisions: this.counters.decision, incidents: this.counters.incident, snapshots: this.counters.snapshot };
+  }
+
+  // ── Startup recovery ───────────────────────────────────────────────────
+  // Scan disk files to recover counters and rebuild index.
+  // Called automatically in constructor (fire-and-forget).
+
+  private async _initFromDisk(): Promise<void> {
+    await Promise.all([
+      this._recoverCounter("tasks", "task"),
+      this._recoverCounter("decisions", "decision"),
+      this._recoverCounter("incidents", "incident"),
+      this._recoverCounter("snapshots", "snapshot"),
+    ]);
+    await Promise.all([
+      this.refreshIndex("tasks"),
+      this.refreshIndex("decisions"),
+      this.refreshIndex("incidents"),
+    ]);
+  }
+
+  private async _recoverCounter(
+    collection: string,
+    counter: "task" | "decision" | "incident" | "snapshot",
+  ): Promise<void> {
+    const dir = this.subdir(collection);
+    try {
+      const files = await readdir(dir);
+      let maxNum = 0;
+      for (const f of files) {
+        const m = f.match(/(\d+)\.json$/);
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1]!, 10));
+      }
+      if (maxNum > this.counters[counter]) {
+        this.counters[counter] = maxNum;
+      }
+    } catch {
+      // Directory doesn't exist yet - counter stays at 0
+    }
   }
 }

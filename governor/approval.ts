@@ -1,6 +1,7 @@
 // AIOS Core — Approval gateway.
 // Per Charter §8: AUTO (risk ≤ threshold) vs MANUAL (human decides).
-// v1.1: ACS-aware. MANUAL decisions are flagged in audit.
+// v1.1: ACS-aware. AcsClient is synchronous (reads JSON files).
+// MANUAL decisions are flagged in audit.
 // AUTO decisions are logged to both AIOS audit and ACS audit trail.
 
 import type { Plan, Approval } from "../kernel/schema/index.js";
@@ -23,11 +24,7 @@ export interface ApprovalResult {
   acsLocked: boolean;
 }
 
-export interface ApprovalDeps {
-  acs?: AcsClient;
-  config?: ApprovalConfig;
-}
-
+/** Infer approval level from plan characteristics. */
 export function inferApproval(plan: Plan): Approval {
   if (plan.risk === "high") return "MANUAL";
   if (plan.risk === "medium") return "MANUAL";
@@ -44,15 +41,15 @@ function isDestructiveAction(plan: Plan): boolean {
   return plan.steps.some((s) => s.action === "delete" || s.action === "migrate");
 }
 
-/** ACS-aware approval check.
+/** ACS-aware approval check (synchronous).
  *  Returns approved=true for AUTO plans (unless ACS is locked).
  *  Returns approved=false for MANUAL plans that need human confirmation. */
-export async function checkApprovalWithAcs(
+export function checkApprovalWithAcs(
   plan: Plan,
   acs?: AcsClient,
-  askHuman?: (plan: Plan) => Promise<boolean>,
-): Promise<ApprovalResult> {
-  const acsLocked = acs ? await acs.isLocked() : false;
+  askHuman?: (plan: Plan) => boolean,
+): ApprovalResult {
+  const acsLocked = acs ? acs.isLocked() : false;
 
   if (acsLocked) {
     return {
@@ -84,7 +81,7 @@ export async function checkApprovalWithAcs(
     return { approved: false, level: "MANUAL", reason: "manual approval required but no askHuman provided", acsLocked: false };
   }
 
-  const confirmed = await askHuman(plan);
+  const confirmed = askHuman(plan);
   return {
     approved: confirmed,
     level: "MANUAL",
@@ -94,13 +91,13 @@ export async function checkApprovalWithAcs(
 }
 
 /** Original checkApproval (backward compatible, no ACS). */
-export async function checkApproval(
+export function checkApproval(
   plan: Plan,
-  askHuman?: (plan: Plan) => Promise<boolean>,
-): Promise<{ ok: boolean; reason?: string }> {
+  askHuman?: (plan: Plan) => boolean,
+): { ok: boolean; reason?: string } {
   if (plan.approval === "AUTO") return { ok: true };
   if (!askHuman) return { ok: false, reason: "manual approval required but no askHuman provided" };
-  const confirmed = await askHuman(plan);
+  const confirmed = askHuman(plan);
   if (!confirmed) return { ok: false, reason: "manual approval denied" };
   return { ok: true };
 }

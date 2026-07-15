@@ -13,9 +13,10 @@
 //   aios replay --last
 
 import { runTask, type RuntimeDeps } from "../kernel/runtime.js";
-import { createPlanner } from "../kernel/planner.js";
-import { createExecutor } from "../kernel/executor.js";
-import { createVerifier } from "../kernel/verifier.js";
+import { createDryRunAdapter, createShadowAdapter } from "../kernel/adapter.js";
+import type { RuntimeAdapter } from "../kernel/adapter.js";
+import { createFallbackProvider, createOpenAIProvider } from "../kernel/model.js";
+import type { ModelProvider, OpenAIConfig } from "../kernel/model.js";
 import { ScopeValidator } from "../governor/scope.js";
 import { Rollback } from "../governor/rollback.js";
 import { AuditLog } from "../governor/audit.js";
@@ -34,7 +35,30 @@ function now() { return new Date().toISOString(); }
 let seq = 0;
 function newId() { return `id-${++seq}`; }
 
-function parseArgs(argv: string[]): { command: string; goal: string; project: string; autoApprove: boolean; tier: ExecutionTier; taskId: string; last: boolean } {
+async function promptUser(question: string): Promise<string> {
+  const { createInterface } = await import("node:readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+function resolveModelProvider(modelFlag: string | undefined): ModelProvider {
+  if (modelFlag === "fallback") return createFallbackProvider();
+  const apiKey = process.env.AIOS_API_KEY ?? process.env.OPENAI_API_KEY;
+  if (apiKey) {
+    const co: OpenAIConfig = { apiKey };
+    const m = process.env.AIOS_MODEL;
+    if (m) co.model = m;
+    return createOpenAIProvider(co);
+  }
+  return createFallbackProvider();
+}
+
+function parseArgs(argv: string[]): { command: string; goal: string; project: string; autoApprove: boolean; tier: ExecutionTier; taskId: string; last: boolean; model: string | undefined } {
   const args = argv.slice(2);
   const command = args[0] ?? "status";
   let goal = "";
@@ -43,6 +67,7 @@ function parseArgs(argv: string[]): { command: string; goal: string; project: st
   let tier: ExecutionTier = 2;
   let taskId = "";
   let last = false;
+  let model: string | undefined;
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--project" && args[i + 1]) { project = args[++i]!; }
@@ -50,10 +75,11 @@ function parseArgs(argv: string[]): { command: string; goal: string; project: st
     else if (args[i] === "--tier" && args[i + 1]) { tier = parseInt(args[++i]!) as ExecutionTier; }
     else if (args[i] === "--task" && args[i + 1]) { taskId = args[++i]!; }
     else if (args[i] === "--last") { last = true; }
+    else if (args[i] === "--model" && args[i + 1]) { model = args[++i]!; }
     else if (!args[i]?.startsWith("--")) { goal = args[i]!; }
   }
 
-  return { command, goal, project, autoApprove, tier, taskId, last };
+  return { command, goal, project, autoApprove, tier, taskId, last, model };
 }
 
 async function readProjectState(project: string): Promise<ProjectState> {
@@ -66,60 +92,59 @@ async function readProjectState(project: string): Promise<ProjectState> {
   }
 }
 
-function makeRuntimeDeps(memory: MemoryStore, goal: string, autoApprove: boolean, tier: ExecutionTier): RuntimeDeps {
+function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: ExecutionTier, provider: ModelProvider): RuntimeDeps {
   const audit = new AuditLog({ memory, now, newId });
+
+  const modelCall = (prompt: string) => {
+    console.error(`[aios] model: ${provider.name}`);
+    return provider.call(prompt);
+  };
+
+  let adapter: RuntimeAdapter;
+  if (tier <= 0) {
+    adapter = createDryRunAdapter({ modelCall });
+  } else if (tier === 1) {
+    adapter = createShadowAdapter({ projectRoot: AIOS_ROOT, modelCall });
+  } else {
+    console.error("[aios] Tier 2 not yet available — falling back to shadow adapter");
+    adapter = createShadowAdapter({ projectRoot: AIOS_ROOT, modelCall });
+  }
+
   const rollback = new Rollback({
-    runCommand: async (cmd) => {
-      try {
-        const { execSync } = await import("node:child_process");
-        const stdout = execSync(cmd, { encoding: "utf8", cwd: AIOS_ROOT });
-        return { ok: true, stdout, stderr: "" };
-      } catch (e: any) {
-        return { ok: false, stdout: e.stdout ?? "", stderr: e.stderr ?? e.message ?? "" };
-      }
-    },
+    runCommand: adapter.runCommand,
     memory,
     now,
   });
 
-  const planner = createPlanner({
-    readProjectState: async () => readProjectState("aios-core"),
-    modelCall: async (_prompt: string) => {
-      console.error("[aios] modelCall not configured — running in shadow mode");
-      return `task: ${goal}\nrisk: low\nscope: src/**\nfiles: []\napproval: AUTO`;
-    },
-    now,
-  });
-
-  const executor = createExecutor({
-    applyPatch: async () => "",
-    runCommand: async () => ({ ok: true, stdout: "", stderr: "" }),
-    now,
-    newId,
-  });
-
-  const verifier = createVerifier({
-    runBuild: async () => ({ ok: true, log: "" }),
-    runTest: async () => ({ ok: true, passed: 5, failed: 0, log: "" }),
-    runLint: async () => ({ ok: true, log: "" }),
-    runE2E: async () => ({ ok: true, log: "" }),
-    now,
-    newId,
-  });
-
   return {
-    planner,
-    executor,
-    verifier,
+    planner: adapter.planner,
+    executor: adapter.executor,
+    verifier: adapter.verifier,
     scope: new ScopeValidator(),
     memory,
     rollback,
     audit,
     tier,
-    now,
-    newId,
-    readProjectState: async () => readProjectState("aios-core"),
-    ...(autoApprove ? { askHuman: async () => true } : {}),
+    now: adapter.now,
+    newId: adapter.newId,
+    readProjectState: (project: string) => readProjectState(project),
+    askHuman: autoApprove
+      ? async () => true
+      : async (plan) => {
+          console.error("\n=== Plan requires manual approval ===");
+          console.error(`  Task:   ${plan.task}`);
+          console.error(`  Risk:   ${plan.risk}`);
+          console.error(`  Files:  ${plan.files.join(", ")}`);
+          console.error(`  Scope:  ${plan.scope.join(", ")}`);
+          if (plan.steps.length > 0) {
+            console.error(`  Steps:`);
+            for (const step of plan.steps) {
+              console.error(`    ${step.order}. ${step.action}${step.target ? ` -> ${step.target}` : ""}`);
+            }
+          }
+          const answer = await promptUser("\nApprove and execute? (y/N): ");
+          return answer.toLowerCase() === "y";
+        },
   };
 }
 
@@ -142,18 +167,19 @@ async function loadAuditEntries(memory: MemoryStore): Promise<AuditEntry[]> {
 }
 
 async function main(): Promise<void> {
-  const { command, goal, project, autoApprove, tier, taskId, last } = parseArgs(process.argv);
+  const { command, goal, project, autoApprove, tier, taskId, last, model } = parseArgs(process.argv);
   const memory = new MemoryStore({ root: MEMORY_ROOT });
+  const provider = resolveModelProvider(model);
 
   switch (command) {
     case "plan":
     case "run": {
       if (!goal) {
-        console.error("Usage: aios plan|run <goal> --project <name> [--tier 0|1|2] [--auto-approve]");
+        console.error("Usage: aios plan|run <goal> --project <name> [--tier 0|1|2] [--model openai|fallback] [--auto-approve]");
         process.exit(1);
       }
       const request: TaskRequest = { goal, project };
-      const deps = makeRuntimeDeps(memory, goal, autoApprove, tier);
+      const deps = makeRuntimeDeps(memory, autoApprove, tier, provider);
       const state = await runTask(request, deps);
       console.log(JSON.stringify({
         taskId: state.taskId,

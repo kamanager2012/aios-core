@@ -163,21 +163,8 @@ function canonicalJson(obj: unknown): string {
 // ── Hash computation ───────────────────────────────────────────────────────
 
 async function sha256Hex(data: string): Promise<string> {
-  try {
-    const { createHash } = await import("node:crypto");
-    return createHash("sha256").update(data, "utf8").digest("hex");
-  } catch {
-    return simpleHash(data);
-  }
-}
-
-function simpleHash(data: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < data.length; i++) {
-    h ^= data.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return ("00000000" + (h >>> 0).toString(16)).slice(-8);
+  const { createHash } = await import("node:crypto");
+  return createHash("sha256").update(data, "utf8").digest("hex");
 }
 
 // ── Legacy API (backward compatible) ───────────────────────────────────────

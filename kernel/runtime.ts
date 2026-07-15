@@ -8,6 +8,7 @@ import type {
   Plan, TaskRequest, ExecutionResult, VerificationReport,
   ProjectState, Phase, Decision, MemoryUpdate, ExecutionTier,
   FailureRecord,
+  RuntimeState, PhaseTransition, 
 } from "./schema/index.js";
 import type { ReconciliationInput, ReconciliationOutput } from "./reconciler.js";
 import { reconcile } from "./reconciler.js";
@@ -23,6 +24,10 @@ import { checkInvariants, type InvariantViolation } from "./invariant.js";
 import type { AuditEntry } from "../governor/audit.js";
 import { classifyFailure, shouldRetry } from "./failure.js";
 import { computeFingerprint, HashChain, verifyChain } from "./statehash.js";
+
+// Re-export types moved to schema for backward compatibility
+export type { RuntimeState, PhaseTransition, InvariantViolation } from "./schema/index.js";
+
 
 export interface RuntimeDeps {
   planner: PlannerFn;
@@ -46,34 +51,9 @@ export interface RuntimeDeps {
   strictHashChain?: boolean;
 }
 
-export interface PhaseTransition {
-  from: Phase | "IDLE";
-  to: Phase;
-  taskId: string;
-  note?: string;
-}
 
-export interface RuntimeState {
-  taskId: string;
-  request: TaskRequest;
-  transitions: PhaseTransition[];
-  plan: Plan | null;
-  execResult: ExecutionResult | null;
-  verifyReport: VerificationReport | null;
-  decision: Decision | null;
-  memoryUpdate: MemoryUpdate | null;
-  memoryCommitted: boolean;
-  memoryRolledBack: boolean;
-  terminal: boolean;
-  reason: string;
-  limitsUsed: { turns: number; context: number; retries: number };
-  totalRetries: number;
-  totalAutoFixAttempts: number;
-  invariantViolations: InvariantViolation[];
-  failureRecord: FailureRecord | null;
-  lastFingerprint?: string;
-  hashChainLength: number;
-}
+
+
 
 async function auditAppend(deps: RuntimeDeps, entry: AuditEntry): Promise<void> {
   await deps.audit.append(entry);
@@ -411,6 +391,7 @@ async function applyRollback(
   deps: RuntimeDeps,
   reason: string,
 ): Promise<void> {
+  await deps.rollback.restore();
   await deps.memory.clearStaging();
   state.memoryRolledBack = true;
   await deps.memory.appendIncident({ id: deps.newId(), taskId: state.taskId, reason, at: deps.now() });

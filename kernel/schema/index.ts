@@ -169,3 +169,42 @@ export interface MemoryIncidentUpdate {
   reason: string;
   at: string;
 }
+
+
+export interface InvariantViolation {
+  invariant: string;
+  message: string;
+  taskId: string;
+  phase: Phase | "IDLE";
+  transition?: PhaseTransition | undefined;
+  state: string; // serialized snapshot of relevant state
+}
+
+export interface PhaseTransition {
+  from: Phase | "IDLE";
+  to: Phase;
+  taskId: string;
+  note?: string;
+}
+
+export interface RuntimeState {
+  taskId: string;
+  request: TaskRequest;
+  transitions: PhaseTransition[];
+  plan: Plan | null;
+  execResult: ExecutionResult | null;
+  verifyReport: VerificationReport | null;
+  decision: Decision | null;
+  memoryUpdate: MemoryUpdate | null;
+  memoryCommitted: boolean;
+  memoryRolledBack: boolean;
+  terminal: boolean;
+  reason: string;
+  limitsUsed: { turns: number; context: number; retries: number };
+  totalRetries: number;
+  totalAutoFixAttempts: number;
+  invariantViolations: InvariantViolation[];
+  failureRecord: FailureRecord | null;
+  lastFingerprint?: string;
+  hashChainLength: number;
+}

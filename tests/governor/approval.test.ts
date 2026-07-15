@@ -31,29 +31,29 @@ describe("inferApproval", () => {
 });
 
 describe("checkApproval", () => {
-  it("AUTO plans pass immediately", async () => {
-    const result = await checkApproval({ ...basePlan, approval: "AUTO" });
+  it("AUTO plans pass immediately", () => {
+    const result = checkApproval({ ...basePlan, approval: "AUTO" });
     expect(result.ok).toBe(true);
   });
 
-  it("MANUAL plans require askHuman", async () => {
-    const result = await checkApproval({ ...basePlan, approval: "MANUAL" });
+  it("MANUAL plans require askHuman", () => {
+    const result = checkApproval({ ...basePlan, approval: "MANUAL" });
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("no askHuman");
   });
 
-  it("MANUAL plans pass when human confirms", async () => {
-    const result = await checkApproval(
+  it("MANUAL plans pass when human confirms", () => {
+    const result = checkApproval(
       { ...basePlan, approval: "MANUAL" },
-      async () => true,
+      () => true,
     );
     expect(result.ok).toBe(true);
   });
 
-  it("MANUAL plans fail when human denies", async () => {
-    const result = await checkApproval(
+  it("MANUAL plans fail when human denies", () => {
+    const result = checkApproval(
       { ...basePlan, approval: "MANUAL" },
-      async () => false,
+      () => false,
     );
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("denied");

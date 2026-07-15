@@ -1,19 +1,19 @@
 // AIOS Core — ACS Client.
-// Bridge to Agent Constraint System (acs_lite.py).
-// Provides: scope loading, violation tracking, lock status, integrity verification.
+// Reads ACS runtime state from JSON files (no subprocess calls).
 //
-// Communication: subprocess calls to `python3 ~/.claude/hooks/acs_lite.py`.
-// This is a read-only client — it does NOT modify ACS state.
+// Per Charter §9 Stage 1: read-only. This client reads:
+//   - ACTIVE_TASK.json  → scope dirs
+//   - VIOLATIONS.json   → violation events + scores
+//   - LOCKED            → lock status
+//
+// No subprocess calls. No writes to ACS state.
 
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readFileSync, existsSync } from "node:fs";
+import path from "node:path";
 
-const execFileAsync = promisify(execFile);
+const RUNTIME_DIR = process.env.ACS_RUNTIME_DIR ?? `${process.env.HOME}/.claude/runtime`;
 
-const ACS_PATH = process.env.ACS_PATH ?? `${process.env.HOME}/.claude/hooks/acs_lite.py`;
-const PYTHON = process.env.ACS_PYTHON ?? "python3";
-
-// ── ACS Status ─────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────
 
 export interface AcsStatus {
   task: string;
@@ -24,8 +24,6 @@ export interface AcsStatus {
   locked: boolean;
 }
 
-// ── ACS Violation Event ────────────────────────────────────────────────────
-
 export interface AcsViolationEvent {
   timestamp: string;
   score: number;
@@ -33,118 +31,81 @@ export interface AcsViolationEvent {
   category: string;
 }
 
-// ── ACS Integrity ──────────────────────────────────────────────────────────
-
-export interface AcsIntegrityResult {
-  ok: boolean;
-  chainLength: number;
-  tampered: string[];
-}
-
 // ── Client ─────────────────────────────────────────────────────────────────
 
 export class AcsClient {
-  constructor(
-    private readonly acsPath: string = ACS_PATH,
-    private readonly python: string = PYTHON,
-  ) {}
+  private readonly runtimeDir: string;
 
-  /** Get current ACS status. */
-  async status(): Promise<AcsStatus> {
-    const { stdout } = await this.run(["status"]);
-    return this.parseStatus(stdout);
+  constructor(runtimeDir?: string) {
+    this.runtimeDir = runtimeDir ?? RUNTIME_DIR;
+  }
+
+  /** Get current ACS status by reading runtime files. */
+  status(): AcsStatus {
+    const locked = existsSync(path.join(this.runtimeDir, "LOCKED"));
+    const task = this.readActiveTask();
+    const violations = this.readViolations();
+    return {
+      task: task.taskId ?? "unknown",
+      dirs: task.dirs ?? [],
+      shadow: task.shadow ?? false,
+      proposal: task.proposal ?? false,
+      violations: {
+        window: violations.windowScore ?? 0,
+        windowMax: 80,
+        total: violations.totalScore ?? 0,
+        totalMax: 150,
+      },
+      locked,
+    };
   }
 
   /** Check if ACS is currently locked. */
-  async isLocked(): Promise<boolean> {
-    try {
-      const status = await this.status();
-      return status.locked;
-    } catch {
-      // If ACS is unreachable, treat as locked (fail-safe).
-      return true;
-    }
+  isLocked(): boolean {
+    return existsSync(path.join(this.runtimeDir, "LOCKED"));
   }
 
   /** Get current ACS scope (allowed directories). */
-  async getScope(): Promise<string[]> {
-    try {
-      const status = await this.status();
-      return status.dirs;
-    } catch {
-      return [];
-    }
+  getScope(): string[] {
+    const task = this.readActiveTask();
+    return task.dirs ?? [];
   }
 
   /** Check if a path is within ACS scope. */
-  async isPathInScope(path: string): Promise<boolean> {
-    const dirs = await this.getScope();
+  isPathInScope(filePath: string): boolean {
+    const dirs = this.getScope();
     if (dirs.length === 0) return false;
-    return dirs.some((dir) => path.startsWith(dir));
+    return dirs.some((dir) => filePath.startsWith(dir));
   }
 
-  /** Verify ACS integrity chain. */
-  async integrityCheck(): Promise<AcsIntegrityResult> {
-    try {
-      const { stdout } = await this.run(["integrity-check"]);
-      const ok = stdout.includes("integrity: ok") || stdout.includes("valid");
-      return { ok, chainLength: 0, tampered: ok ? [] : ["integrity check failed"] };
-    } catch {
-      return { ok: false, chainLength: 0, tampered: ["ACS unreachable"] };
-    }
+  /** Get violation events. */
+  getViolations(): AcsViolationEvent[] {
+    const data = this.readViolations();
+    return Array.isArray(data.events) ? data.events : [];
   }
 
-  /** Get violation events from the violations file. */
-  async getViolations(): Promise<AcsViolationEvent[]> {
-    try {
-      const { readFileSync } = await import("node:fs");
-      const path = await import("node:path");
-      const violationsPath = path.join(
-        process.env.HOME ?? "/home",
-        ".claude/runtime/VIOLATIONS.json",
-      );
-      const raw = readFileSync(violationsPath, "utf-8");
-      const data = JSON.parse(raw);
-      return Array.isArray(data.events) ? data.events : [];
-    } catch {
-      return [];
-    }
+  /** Check if ACS runtime directory exists (i.e., ACS is installed). */
+  isAvailable(): boolean {
+    return existsSync(this.runtimeDir);
   }
 
   // ── Internal ───────────────────────────────────────────────────────────
 
-  private async run(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    return execFileAsync(this.python, [this.acsPath, ...args], {
-      timeout: 5000,
-      maxBuffer: 1024 * 1024,
-    });
+  private readActiveTask(): { taskId?: string; dirs?: string[]; shadow?: boolean; proposal?: boolean } {
+    try {
+      const raw = readFileSync(path.join(this.runtimeDir, "ACTIVE_TASK.json"), "utf-8");
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
 
-  private parseStatus(raw: string): AcsStatus {
-    const task = this.extractField(raw, "task") ?? "unknown";
-    const dirsMatch = raw.match(/dirs:\s*\[([^\]]*)\]/);
-    const dirs = dirsMatch
-      ? dirsMatch[1]!.split(",").map((s) => s.trim().replace(/['"]/g, "")).filter((s) => s.length > 0)
-      : [];
-    const shadow = raw.includes("shadow: True");
-    const proposal = raw.includes("proposal: True");
-    const locked = raw.includes("locked: YES");
-    const violations = this.parseViolations(raw);
-    return { task, dirs, shadow, proposal, violations, locked };
-  }
-
-  private parseViolations(raw: string): AcsStatus["violations"] {
-    const vm = raw.match(/violations:\s*window=(\d+)\/(\d+)\s+total=(\d+)\/(\d+)/);
-    return {
-      window: vm ? parseInt(vm[1]!) : 0,
-      windowMax: vm ? parseInt(vm[2]!) : 80,
-      total: vm ? parseInt(vm[3]!) : 0,
-      totalMax: vm ? parseInt(vm[4]!) : 150,
-    };
-  }
-
-  private extractField(raw: string, name: string): string | undefined {
-    const m = raw.match(new RegExp(`${name}:\\s*(\\S+)`));
-    return m?.[1];
+  private readViolations(): { events?: AcsViolationEvent[]; windowScore?: number; totalScore?: number } {
+    try {
+      const raw = readFileSync(path.join(this.runtimeDir, "VIOLATIONS.json"), "utf-8");
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
 }

@@ -7,19 +7,11 @@
 // These are NOT policy rules (scope/approval/limits).
 // These are structural invariants of the state machine itself.
 
-import type { Phase, Decision } from "./schema/index.js";
-import type { RuntimeState, PhaseTransition } from "./runtime.js";
+import type { Phase, Decision, RuntimeState, PhaseTransition, InvariantViolation } from "./schema/index.js";
 
 // ── Invariant definition ───────────────────────────────────────────────────
 
-export interface InvariantViolation {
-  invariant: string;
-  message: string;
-  taskId: string;
-  phase: Phase | "IDLE";
-  transition?: PhaseTransition | undefined;
-  state: string; // serialized snapshot of relevant state
-}
+
 
 export interface InvariantCheckResult {
   ok: boolean;
@@ -177,3 +169,6 @@ export function checkInvariants(
 
   return { ok: violations.length === 0, violations };
 }
+
+// Re-export for backward compatibility
+export type { InvariantViolation } from "./schema/index.js";

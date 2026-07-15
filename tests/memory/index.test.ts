@@ -105,4 +105,51 @@ describe("MemoryStore", () => {
     expect(files.length).toBe(1);
     expect(files[0]).toMatch(/^task_/);
   });
+
+  it("recovers counters from disk on startup", async () => {
+    // First instance: create records
+    await memory.appendTask({ taskId: "T-1", status: "completed", decision: "COMMIT", at: NOW() });
+    await memory.appendTask({ taskId: "T-2", status: "completed", decision: "COMMIT", at: NOW() });
+    await memory.appendDecision({ id: "d-1", decision: "COMMIT", reason: "ok", at: NOW() });
+    await memory.appendIncident({ id: "inc-1", taskId: "T-1", reason: "test", at: NOW() });
+    await memory.writeToCurrent("project_state.json", '{"goal":"v1"}');
+    await memory.writeToStaging("diff.txt", "change");
+    await memory.commitStaging("task-1", NOW);
+
+    expect(memory.count()).toEqual({
+      tasks: 2, decisions: 1, incidents: 1, snapshots: 1,
+    });
+
+    // Second instance on same directory: counters should recover
+    const memory2 = new MemoryStore({ root: tmpDir });
+    // Wait for async _initFromDisk to complete
+    await new Promise((r) => setTimeout(r, 100));
+    const c = memory2.count();
+    expect(c.tasks).toBe(2);
+    expect(c.decisions).toBe(1);
+    expect(c.incidents).toBe(1);
+    expect(c.snapshots).toBeGreaterThanOrEqual(1);
+
+    // Verify index is also recovered
+    const recentTasks = memory2.recentTasks(5);
+    expect(recentTasks.length).toBe(2);
+  });
+
+  it("does not overwrite existing files after restart", async () => {
+    // Create some records
+    await memory.appendTask({ taskId: "T-1", status: "done", decision: "COMMIT", at: NOW() });
+    const taskFiles = await readdir(join(tmpDir, "tasks"));
+    expect(taskFiles.length).toBe(1);
+
+    // New instance on same directory should NOT overwrite existing task_0001.json
+    const memory2 = new MemoryStore({ root: tmpDir });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Append new task — should be task_0002, not task_0001
+    await memory2.appendTask({ taskId: "T-2", status: "done", decision: "COMMIT", at: NOW() });
+    const taskFiles2 = await readdir(join(tmpDir, "tasks"));
+    expect(taskFiles2.length).toBe(2);
+    expect(taskFiles2).toContain("task_0001.json");
+    expect(taskFiles2).toContain("task_0002.json");
+  });
 });

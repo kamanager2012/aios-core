@@ -5,6 +5,7 @@
 // v1.1: ACS-aware. When an AcsClient is provided, scope is loaded from ACS
 // runtime config (ACTIVE_TASK.json) and violations are checked before validation.
 // Without AcsClient, falls back to DEFAULT_POLICY (backwards compatible).
+// AcsClient is synchronous (reads JSON files, no subprocess).
 
 import type { Plan } from "../kernel/schema/index.js";
 import type { AcsClient } from "./acs_client.js";
@@ -53,21 +54,21 @@ export class ScopeValidator {
   }
 
   /** Check if ACS is locked. If locked, all writes are denied. */
-  async isAcsLocked(): Promise<boolean> {
+  isAcsLocked(): boolean {
     if (!this.acs) return false;
     return this.acs.isLocked();
   }
 
   /** Get ACS-enforced allowed directories. */
-  async getAcsScope(): Promise<string[]> {
+  getAcsScope(): string[] {
     if (!this.acs) return this.policy.allowedPaths;
     return this.acs.getScope();
   }
 
   /** Validate a plan against both local policy and ACS scope. */
-  async validatePlanWithAcs(plan: Plan): Promise<{ ok: boolean; reason?: string }> {
+  validatePlanWithAcs(plan: Plan): { ok: boolean; reason?: string } {
     // 1. ACS lock check
-    if (await this.isAcsLocked()) {
+    if (this.isAcsLocked()) {
       return { ok: false, reason: "ACS is locked — all writes denied" };
     }
 
@@ -76,9 +77,9 @@ export class ScopeValidator {
       return { ok: false, reason: "plan violates local scope policy" };
     }
 
-    // 3. ACS scope check (async)
+    // 3. ACS scope check
     if (this.acs) {
-      const acsScope = await this.getAcsScope();
+      const acsScope = this.getAcsScope();
       for (const file of plan.files) {
         const inAcsScope = acsScope.some((dir) => file.startsWith(dir));
         if (!inAcsScope) {

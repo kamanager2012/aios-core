@@ -3,8 +3,8 @@
 // Reconstructs complete RuntimeState trajectory from audit log.
 // Deterministic replay: same audit entries → same state trajectory.
 
-import type { Phase, Decision, Plan, ExecutionResult, VerificationReport } from "./schema/index.js";
-import type { PhaseTransition } from "./runtime.js";
+import type { Phase, Decision, Plan, ExecutionResult, VerificationReport, PhaseTransition } from "./schema/index.js";
+
 import type { AuditEntry } from "../governor/audit.js";
 import { upgradeEntry, validateEntryVersion, CURRENT_SCHEMA_VERSION, type VersionedEntry } from "./schema_version.js";
 
@@ -151,7 +151,13 @@ export function replayAll(entries: AuditEntry[]): ReplayTrajectory[] {
   }
 
   return Array.from(byTask.entries())
-    .map(([_, taskEntries]) => replayTask(taskEntries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))));
+    .map(([_, taskEntries]) => ({ taskEntries, trajectories: replayTask(taskEntries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0))) }))
+    .sort((a, b) => {
+      const aSeq = a.taskEntries[0]?.seq ?? 0;
+      const bSeq = b.taskEntries[0]?.seq ?? 0;
+      return aSeq - bSeq;
+    })
+    .map((r) => r.trajectories);
 }
 
 // ── Query: find nearest snapshot before a given seq ────────────────────────

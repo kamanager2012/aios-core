@@ -24,10 +24,7 @@ export interface VersionedEntry {
 
 type Migration = (entry: VersionedEntry) => VersionedEntry;
 
-const MIGRATIONS: Map<number, Migration> = new Map([
-  // Future: migrate v0 → v1
-  // MIGRATIONS.set(0, (entry) => ({ ...entry, _v: 1, newField: entry.oldField ?? "default" }));
-]);
+const MIGRATIONS = new Map<number, Migration>();
 
 // ── Upgrade entry to current version ───────────────────────────────────────
 

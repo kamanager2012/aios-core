@@ -1,24 +1,44 @@
 // AIOS Core — ACS Bridge.
-// Connects AIOS Governor to the Agent Constraint System (acs_lite.py).
+// Connects AIOS Governor to ACS runtime state.
 //
-// Flow:
-//   AIOS plan → ScopeValidator → ApprovalGateway → ACS Bridge → acs_lite.py
-//                                                         ↓
-//                                                   scope init
-//                                                   lock/unlock
-//                                                   violation check
+// Per Charter §9 Stage 1: read-only shadow mode.
+// Produces a 4-way decision matrix comparing AIOS decisions with ACS state.
+// This enables offline comparison without calling ACS's write interface.
 //
-// The bridge does NOT bypass ACS. It communicates with ACS as a client.
-// ACS remains the runtime enforcement layer (hooks).
-// AIOS remains the decision layer (state machine).
+// 4-way matrix (from 9.0 system report §七):
+//
+//   |                | ACS Allow | ACS Deny |
+//   |----------------|-----------|----------|
+//   | AIOS Allow     | SAFE_ALLOW| RISK_ALLOW|
+//   | AIOS Deny      | SAFE_DENY | RISK_DENY |
+//
+// SAFE_ALLOW = both agree → proceed
+// RISK_ALLOW = AIOS allows but ACS would deny → flag for review
+// SAFE_DENY  = AIOS denies (ACS irrelevant) → blocked by AIOS
+// RISK_DENY  = both deny → blocked
 
-import type { Plan, Approval } from "../kernel/schema/index.js";
+import type { Plan, Decision } from "../kernel/schema/index.js";
 import { AcsClient } from "./acs_client.js";
 import { ACS_DENIED_PATHS } from "./scope.js";
 
+// ── 4-way matrix ───────────────────────────────────────────────────────────
+
+export type MatrixVerdict = "SAFE_ALLOW" | "RISK_ALLOW" | "SAFE_DENY" | "RISK_DENY";
+
+export interface MatrixResult {
+  verdict: MatrixVerdict;
+  aiosDecision: "ALLOW" | "DENY";
+  acsDecision: "ALLOW" | "DENY";
+  reason: string;
+  acsLocked: boolean;
+  acsScope: string[];
+  violations: { window: number; windowMax: number; total: number; totalMax: number };
+}
+
 export interface AcsBridgeResult {
   ok: boolean;
-  reason?: string;
+  reason?: string | undefined;
+  matrix?: MatrixResult;
   acsStatus?: {
     locked: boolean;
     scope: string[];
@@ -33,89 +53,125 @@ export class AcsBridge {
     this.client = client ?? new AcsClient();
   }
 
-  /** Pre-flight check before any plan execution.
-   *  1. Is ACS locked?
-   *  2. Are any plan files in ACS protected paths?
-   *  3. Are all plan files in ACS scope?
-   *  4. Are there recent violations approaching lock threshold?
-   */
-  async preflight(plan: Plan): Promise<AcsBridgeResult> {
-    // 1. Lock check
-    const locked = await this.client.isLocked();
-    if (locked) {
-      return {
-        ok: false,
-        reason: "ACS is locked — cannot execute",
-        acsStatus: { locked: true, scope: [], violations: { window: 0, total: 0 } },
-      };
-    }
+  /** Pre-flight check with 4-way matrix decision.
+   *  This is the primary entry point for runtime.ts. */
+  preflight(plan: Plan): AcsBridgeResult {
+    // Step 1: Determine AIOS decision
+    const aiosDenyReason = this.checkAiosRules(plan);
+    const aiosDecision: "ALLOW" | "DENY" = aiosDenyReason ? "DENY" : "ALLOW";
 
-    // 2. Protected paths (checked before scope — more specific)
-    const protected_ = plan.files.filter((f) => ACS_DENIED_PATHS.some((p) => f.includes(p)));
-    if (protected_.length > 0) {
-      return {
-        ok: false,
-        reason: `ACS protected paths: ${protected_.join(", ")}`,
-        acsStatus: { locked: false, scope: [], violations: { window: 0, total: 0 } },
-      };
-    }
+    // Step 2: Determine ACS decision
+    const acsStatus = this.client.status();
+    const acsDenyReason = this.checkAcsRules(plan, acsStatus);
+    const acsDecision: "ALLOW" | "DENY" = acsDenyReason ? "DENY" : "ALLOW";
 
-    // 3. Scope check
-    const acsScope = await this.client.getScope();
-    const outOfScope: string[] = [];
-    for (const file of plan.files) {
-      const inScope = acsScope.some((dir) => file.startsWith(dir));
-      if (!inScope) outOfScope.push(file);
-    }
-    if (outOfScope.length > 0) {
-      return {
-        ok: false,
-        reason: `ACS scope violation: ${outOfScope.join(", ")}`,
-        acsStatus: { locked: false, scope: acsScope, violations: { window: 0, total: 0 } },
-      };
-    }
+    // Step 3: Compute 4-way matrix
+    const verdict = computeVerdict(aiosDecision, acsDecision);
+    const reason = aiosDenyReason ?? acsDenyReason ?? "both allow";
 
-    // 4. Violation pressure
-    const status = await this.client.status();
-    const pressure = status.violations.window / status.violations.windowMax;
-    if (pressure > 0.8) {
-      return {
-        ok: false,
-        reason: `ACS violation pressure ${(pressure * 100).toFixed(0)}% — approaching lock threshold`,
-        acsStatus: {
-          locked: false,
-          scope: status.dirs,
-          violations: { window: status.violations.window, total: status.violations.total },
-        },
-      };
-    }
+    const matrix: MatrixResult = {
+      verdict,
+      aiosDecision,
+      acsDecision,
+      reason,
+      acsLocked: acsStatus.locked,
+      acsScope: acsStatus.dirs,
+      violations: {
+        window: acsStatus.violations.window,
+        windowMax: acsStatus.violations.windowMax,
+        total: acsStatus.violations.total,
+        totalMax: acsStatus.violations.totalMax,
+      },
+    };
+
+    // SAFE_ALLOW → ok=true, everything else → ok=false
+    const ok = verdict === "SAFE_ALLOW";
 
     return {
-      ok: true,
+      ok,
+      reason: ok ? undefined : reason,
+      matrix,
       acsStatus: {
-        locked: false,
-        scope: status.dirs,
-        violations: { window: status.violations.window, total: status.violations.total },
+        locked: acsStatus.locked,
+        scope: acsStatus.dirs,
+        violations: {
+          window: acsStatus.violations.window,
+          total: acsStatus.violations.total,
+        },
       },
     };
   }
 
-  /** Get current ACS status for display. */
-  async status(): Promise<{
+  /** Get ACS status for display. */
+  status(): {
     locked: boolean;
     scope: string[];
     violations: { window: number; windowMax: number; total: number; totalMax: number };
-  }> {
-    const status = await this.client.status();
+  } {
+    const s = this.client.status();
     return {
-      locked: status.locked,
-      scope: status.dirs,
-      violations: status.violations,
+      locked: s.locked,
+      scope: s.dirs,
+      violations: s.violations,
     };
   }
 
   /** Check if a single path is allowed by ACS. */
-  async isPathAllowed(path: string): Promise<boolean> {
-    return this.client.isPathInScope(path);
+  isPathAllowed(filePath: string): boolean {
+    return this.client.isPathInScope(filePath);
   }
+
+  // ── AIOS rules (synchronous) ──────────────────────────────────────────
+
+  private checkAiosRules(plan: Plan): string | null {
+    // Protected paths
+    const protected_ = plan.files.filter((f) => ACS_DENIED_PATHS.some((p) => f.includes(p)));
+    if (protected_.length > 0) {
+      return `AIOS protected paths: ${protected_.join(", ")}`;
+    }
+
+    // Denied file types
+    const deniedTypes = [".pem", ".key", ".p12", ".keystore", ".jks"];
+    const badTypes = plan.files.filter((f) => deniedTypes.some((ext) => f.endsWith(ext)));
+    if (badTypes.length > 0) {
+      return `AIOS denied file types: ${badTypes.join(", ")}`;
+    }
+
+    return null;
+  }
+
+  // ── ACS rules (reads runtime files) ───────────────────────────────────
+
+  private checkAcsRules(plan: Plan, status: ReturnType<AcsClient["status"]>): string | null {
+    // ACS locked
+    if (status.locked) {
+      return "ACS is locked";
+    }
+
+    // ACS scope check
+    const outOfScope = plan.files.filter((f) => {
+      if (status.dirs.length === 0) return false; // no scope = no ACS enforcement
+      return !status.dirs.some((dir) => f.startsWith(dir));
+    });
+    if (outOfScope.length > 0) {
+      return `ACS scope violation: ${outOfScope.join(", ")}`;
+    }
+
+    // ACS violation pressure
+    const pressure = status.violations.window / status.violations.windowMax;
+    if (pressure > 0.8) {
+      return `ACS violation pressure ${(pressure * 100).toFixed(0)}%`;
+    }
+
+    return null;
+  }
+}
+
+// ── Pure ───────────────────────────────────────────────────────────────────
+
+function computeVerdict(aios: "ALLOW" | "DENY", acs: "ALLOW" | "DENY"): MatrixVerdict {
+  if (aios === "ALLOW" && acs === "ALLOW") return "SAFE_ALLOW";
+  if (aios === "ALLOW" && acs === "DENY") return "RISK_ALLOW";
+  if (aios === "DENY"  && acs === "ALLOW") return "SAFE_DENY";
+  return "RISK_DENY"; // both deny
 }

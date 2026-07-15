@@ -1,25 +1,35 @@
-import { describe, it, expect, vi } from "vitest";
-import { AcsClient } from "../../governor/acs_client.js";
-import { AcsBridge } from "../../governor/acs_bridge.js";
+import { describe, it, expect } from "vitest";
+import { AcsClient, type AcsStatus } from "../../governor/acs_client.js";
+import { AcsBridge, type MatrixVerdict } from "../../governor/acs_bridge.js";
 import { ScopeValidator, ACS_DENIED_PATHS } from "../../governor/scope.js";
 import { inferApproval, checkApprovalWithAcs } from "../../governor/approval.js";
 import type { Plan } from "../../kernel/schema/index.js";
 
-// ── Mock AcsClient ─────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function createMockClient(overrides?: Partial<AcsClient>): AcsClient {
+  const client = new AcsClient("/nonexistent");
+  // Default: scope matches makePlan()'s files: ["src/a.ts"]
+  client.getScope = () => ["src/"];
+  client.isLocked = () => false;
+  client.status = () => makeStatus();
+  if (overrides?.status) client.status = overrides.status;
+  if (overrides?.isLocked) client.isLocked = overrides.isLocked;
+  if (overrides?.getScope) client.getScope = overrides.getScope;
+  if (overrides?.isPathInScope) client.isPathInScope = overrides.isPathInScope;
+  return client;
+}
+
+function makeStatus(overrides?: Partial<AcsStatus>): AcsStatus {
   return {
-    status: overrides?.status ?? (async () => ({
-      task: "test", dirs: ["src/"], shadow: false, proposal: false,
-      violations: { window: 0, windowMax: 80, total: 0, totalMax: 150 },
-      locked: false,
-    })),
-    isLocked: overrides?.isLocked ?? (async () => false),
-    getScope: overrides?.getScope ?? (async () => ["src/"]),
-    isPathInScope: overrides?.isPathInScope ?? (async (p: string) => p.startsWith("src/")),
-    integrityCheck: overrides?.integrityCheck ?? (async () => ({ ok: true, chainLength: 5, tampered: [] })),
-    getViolations: overrides?.getViolations ?? (async () => []),
-  } as unknown as AcsClient;
+    task: "test",
+    dirs: ["src/"],
+    shadow: false,
+    proposal: false,
+    violations: { window: 0, windowMax: 80, total: 0, totalMax: 150 },
+    locked: false,
+    ...overrides,
+  };
 }
 
 function makePlan(overrides?: Partial<Plan>): Plan {
@@ -41,77 +51,86 @@ function makePlan(overrides?: Partial<Plan>): Plan {
 // ── AcsClient ──────────────────────────────────────────────────────────────
 
 describe("AcsClient", () => {
-  it("reports locked status", async () => {
-    const client = createMockClient({ isLocked: async () => true });
-    expect(await client.isLocked()).toBe(true);
+  it("reports locked status", () => {
+    const client = createMockClient({ isLocked: () => true });
+    expect(client.isLocked()).toBe(true);
   });
 
-  it("reports unlocked status", async () => {
-    const client = createMockClient({ isLocked: async () => false });
-    expect(await client.isLocked()).toBe(false);
+  it("reports unlocked status", () => {
+    const client = createMockClient({ isLocked: () => false });
+    expect(client.isLocked()).toBe(false);
   });
 
-  it("returns scope directories", async () => {
-    const client = createMockClient({ getScope: async () => ["src/", "lib/"] });
-    const scope = await client.getScope();
-    expect(scope).toEqual(["src/", "lib/"]);
+  it("returns scope directories", () => {
+    const client = createMockClient({ getScope: () => ["src/", "lib/"] });
+    expect(client.getScope()).toEqual(["src/", "lib/"]);
   });
 
-  it("checks if path is in scope", async () => {
-    const client = createMockClient();
-    expect(await client.isPathInScope("src/foo.ts")).toBe(true);
-    expect(await client.isPathInScope("etc/passwd")).toBe(false);
+  it("checks if path is in scope", () => {
+    const client = createMockClient({ isPathInScope: (p: string) => p.startsWith("src/") });
+    expect(client.isPathInScope("src/foo.ts")).toBe(true);
+    expect(client.isPathInScope("etc/passwd")).toBe(false);
   });
 });
 
-// ── AcsBridge ──────────────────────────────────────────────────────────────
+// ── AcsBridge 4-way matrix ─────────────────────────────────────────────────
 
 describe("AcsBridge", () => {
-  it("preflight passes for valid plan in scope", async () => {
-    const bridge = new AcsBridge(createMockClient());
-    const result = await bridge.preflight(makePlan());
+  it("returns SAFE_ALLOW when both AIOS and ACS allow", () => {
+    const bridge = new AcsBridge(createMockClient({ status: () => makeStatus() }));
+    const result = bridge.preflight(makePlan());
     expect(result.ok).toBe(true);
+    expect(result.matrix?.verdict).toBe("SAFE_ALLOW");
   });
 
-  it("preflight fails when ACS is locked", async () => {
-    const bridge = new AcsBridge(createMockClient({ isLocked: async () => true }));
-    const result = await bridge.preflight(makePlan());
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain("ACS is locked");
-  });
-
-  it("preflight fails for files out of ACS scope", async () => {
-    const bridge = new AcsBridge(createMockClient({ getScope: async () => ["lib/"] }));
-    const result = await bridge.preflight(makePlan({ files: ["src/a.ts"] }));
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain("ACS scope violation");
-  });
-
-  it("preflight fails for ACS protected paths", async () => {
-    const bridge = new AcsBridge(createMockClient());
-    const result = await bridge.preflight(makePlan({ files: [".claude/hooks/acs_lite.py"] }));
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain("ACS protected");
-  });
-
-  it("preflight fails when violation pressure is high", async () => {
+  it("returns RISK_ALLOW when AIOS allows but ACS scope denies", () => {
     const bridge = new AcsBridge(createMockClient({
-      status: async () => ({
-        task: "test", dirs: ["src/"], shadow: false, proposal: false,
-        violations: { window: 70, windowMax: 80, total: 50, totalMax: 150 },
-        locked: false,
-      }),
+      status: () => makeStatus({ dirs: ["lib/"] }),
+      isLocked: () => false,
+      getScope: () => ["lib/"],
     }));
-    const result = await bridge.preflight(makePlan());
+    const result = bridge.preflight(makePlan({ files: ["src/a.ts"] }));
     expect(result.ok).toBe(false);
+    expect(result.matrix?.verdict).toBe("RISK_ALLOW");
+    expect(result.matrix?.acsDecision).toBe("DENY");
+    expect(result.matrix?.aiosDecision).toBe("ALLOW");
+  });
+
+  it("returns SAFE_DENY when AIOS denies (protected path) but ACS allows", () => {
+    // ACS scope includes .claude/ so ACS allows, but AIOS denies (protected path)
+    const bridge = new AcsBridge(createMockClient({
+      status: () => makeStatus({ dirs: [".claude/", "src/"] }),
+      getScope: () => [".claude/", "src/"],
+    }));
+    const result = bridge.preflight(makePlan({ files: [".claude/hooks/acs_lite.py"] }));
+    expect(result.ok).toBe(false);
+    expect(result.matrix?.verdict).toBe("SAFE_DENY");
+    expect(result.matrix?.aiosDecision).toBe("DENY");
+    expect(result.matrix?.acsDecision).toBe("ALLOW");
+  });
+
+  it("returns RISK_DENY when both deny (ACS locked)", () => {
+    const bridge = new AcsBridge(createMockClient({ status: () => makeStatus({ locked: true }) }));
+    const result = bridge.preflight(makePlan({ files: [".claude/settings.json"] }));
+    expect(result.ok).toBe(false);
+    expect(result.matrix?.verdict).toBe("RISK_DENY");
+  });
+
+  it("returns RISK_ALLOW when violation pressure is high", () => {
+    const bridge = new AcsBridge(createMockClient({
+      status: () => makeStatus({ violations: { window: 70, windowMax: 80, total: 50, totalMax: 150 } }),
+    }));
+    const result = bridge.preflight(makePlan());
+    expect(result.ok).toBe(false);
+    expect(result.matrix?.verdict).toBe("RISK_ALLOW");
     expect(result.reason).toContain("violation pressure");
   });
 
-  it("reports status", async () => {
-    const bridge = new AcsBridge(createMockClient());
-    const status = await bridge.status();
-    expect(status.locked).toBe(false);
-    expect(status.scope).toEqual(["src/"]);
+  it("includes ACS status in result", () => {
+    const bridge = new AcsBridge(createMockClient({ status: () => makeStatus() }));
+    const result = bridge.preflight(makePlan());
+    expect(result.acsStatus?.locked).toBe(false);
+    expect(result.acsStatus?.scope).toEqual(["src/"]);
   });
 });
 
@@ -125,22 +144,25 @@ describe("ScopeValidator ACS integration", () => {
     expect(sv.validatePath(".claude/settings.json")).toBe(false);
   });
 
-  it("validatePlanWithAcs passes for in-scope plan", async () => {
+  it("validatePlanWithAcs passes for in-scope plan", () => {
     const sv = new ScopeValidator({ acs: createMockClient() });
-    const result = await sv.validatePlanWithAcs(makePlan());
+    const result = sv.validatePlanWithAcs(makePlan());
     expect(result.ok).toBe(true);
   });
 
-  it("validatePlanWithAcs fails when ACS is locked", async () => {
-    const sv = new ScopeValidator({ acs: createMockClient({ isLocked: async () => true }) });
-    const result = await sv.validatePlanWithAcs(makePlan());
+  it("validatePlanWithAcs fails when ACS is locked", () => {
+    const sv = new ScopeValidator({ acs: createMockClient({ isLocked: () => true }) });
+    const result = sv.validatePlanWithAcs(makePlan());
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("ACS is locked");
   });
 
-  it("validatePlanWithAcs fails for out-of-scope files", async () => {
-    const sv = new ScopeValidator({ acs: createMockClient({ getScope: async () => ["lib/"] }) });
-    const result = await sv.validatePlanWithAcs(makePlan({ files: ["src/a.ts"] }));
+  it("validatePlanWithAcs fails for out-of-scope files", () => {
+    const sv = new ScopeValidator({ acs: createMockClient({
+      getScope: () => ["lib/"],
+      isPathInScope: (p: string) => p.startsWith("lib/"),
+    }) });
+    const result = sv.validatePlanWithAcs(makePlan({ files: ["src/a.ts"] }));
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("ACS scope violation");
   });
@@ -149,20 +171,20 @@ describe("ScopeValidator ACS integration", () => {
 // ── Approval with ACS ───────────────────────────────────────────────────────
 
 describe("Approval ACS integration", () => {
-  it("auto-approves low risk plan when ACS is not locked", async () => {
-    const result = await checkApprovalWithAcs(makePlan(), createMockClient());
+  it("auto-approves low risk plan when ACS is not locked", () => {
+    const result = checkApprovalWithAcs(makePlan(), createMockClient());
     expect(result.approved).toBe(true);
     expect(result.level).toBe("AUTO");
   });
 
-  it("rejects when ACS is locked", async () => {
-    const result = await checkApprovalWithAcs(makePlan(), createMockClient({ isLocked: async () => true }));
+  it("rejects when ACS is locked", () => {
+    const result = checkApprovalWithAcs(makePlan(), createMockClient({ isLocked: () => true }));
     expect(result.approved).toBe(false);
     expect(result.acsLocked).toBe(true);
   });
 
-  it("overrides AUTO to MANUAL for protected paths", async () => {
-    const result = await checkApprovalWithAcs(
+  it("overrides AUTO to MANUAL for protected paths", () => {
+    const result = checkApprovalWithAcs(
       makePlan({ approval: "AUTO", files: [".env"] }),
       createMockClient(),
     );
@@ -174,5 +196,39 @@ describe("Approval ACS integration", () => {
     expect(inferApproval(makePlan({ risk: "high" }))).toBe("MANUAL");
     expect(inferApproval(makePlan({ risk: "medium" }))).toBe("MANUAL");
     expect(inferApproval(makePlan({ risk: "low" }))).toBe("AUTO");
+  });
+});
+
+// ── 4-way matrix verdict table ──────────────────────────────────────────────
+
+describe("4-way matrix verdict computation", () => {
+  it("SAFE_ALLOW: both AIOS and ACS allow", () => {
+    const bridge = new AcsBridge(createMockClient({ status: () => makeStatus() }));
+    const result = bridge.preflight(makePlan({ files: ["src/a.ts"] }));
+    expect(result.matrix?.verdict).toBe("SAFE_ALLOW");
+  });
+
+  it("RISK_ALLOW: AIOS allows, ACS denies (scope mismatch)", () => {
+    const bridge = new AcsBridge(createMockClient({
+      status: () => makeStatus({ dirs: ["lib/"] }),
+      getScope: () => ["lib/"],
+    }));
+    const result = bridge.preflight(makePlan({ files: ["src/a.ts"] }));
+    expect(result.matrix?.verdict).toBe("RISK_ALLOW");
+  });
+
+  it("SAFE_DENY: AIOS denies (protected path), ACS allows", () => {
+    const bridge = new AcsBridge(createMockClient({
+      status: () => makeStatus({ dirs: [".claude/", "src/"] }),
+      getScope: () => [".claude/", "src/"],
+    }));
+    const result = bridge.preflight(makePlan({ files: [".claude/settings.json"] }));
+    expect(result.matrix?.verdict).toBe("SAFE_DENY");
+  });
+
+  it("RISK_DENY: AIOS denies, ACS also denies (locked)", () => {
+    const bridge = new AcsBridge(createMockClient({ status: () => makeStatus({ locked: true }) }));
+    const result = bridge.preflight(makePlan({ files: [".claude/settings.json"] }));
+    expect(result.matrix?.verdict).toBe("RISK_DENY");
   });
 });

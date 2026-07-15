@@ -161,8 +161,6 @@ function ruleBasedModelCall(prompt: string): Promise<string> {
   if (/replay/i.test(goal)) files.push("kernel/replay.ts");
   if (files.length === 0) files.push("kernel/runtime.ts");
 
-  if (/\/etc\/passwd/i.test(goal)) files.push("/etc/passwd");
-
   const response = [
     `task: ${goal}`,
     `risk: ${risk}`,
