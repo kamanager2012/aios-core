@@ -41,6 +41,38 @@ function isDestructiveAction(plan: Plan): boolean {
   return plan.steps.some((s) => s.action === "delete" || s.action === "migrate");
 }
 
+// Template/sample suffixes never hold real secrets — `.env.example` must not
+// be treated as `.env` (a substring match would, e.g. `.env.in.example`).
+const TEMPLATE_SUFFIXES = [".example", ".template", ".sample", ".in"];
+
+/** Segment-level protected-path match.
+ *  - `secrets/` matches the `secrets` path segment (directory).
+ *  - `.env` matches the `.env` segment or dotted variants like
+ *    `.env.production`/`.env.local` — real env files — but not
+ *    template/sample names like `.env.example`. */
+function matchesProtectedPath(file: string, pattern: string): boolean {
+  const pat = pattern.endsWith("/") ? pattern.slice(0, -1) : pattern;
+  return file.split("/").some((seg) => {
+    if (seg === pat) return true;
+    if (!pat.startsWith(".") || !seg.startsWith(pat + ".")) return false;
+    return !TEMPLATE_SUFFIXES.some((s) => seg.endsWith(s));
+  });
+}
+
+function touchesProtectedPath(files: string[]): boolean {
+  return files.some((f) => DEFAULT_APPROVAL_CONFIG.protectedPaths.some((p) => matchesProtectedPath(f, p)));
+}
+
+/** Effective approval level for a plan.
+ *  Protected-path plans (config/secret-adjacent files) may NOT be
+ *  self-approved via `approval: AUTO` in the model's YAML — they are forced
+ *  to MANUAL regardless of what the model requested. */
+export function effectiveApproval(plan: Plan): Approval {
+  const touchesProtected = touchesProtectedPath(plan.files);
+  if (touchesProtected && plan.approval === "AUTO") return "MANUAL";
+  return plan.approval;
+}
+
 /** ACS-aware approval check (synchronous).
  *  Returns approved=true for AUTO plans (unless ACS is locked).
  *  Returns approved=false for MANUAL plans that need human confirmation. */
@@ -61,8 +93,7 @@ export function checkApprovalWithAcs(
   }
 
   // Check protected paths
-  const protectedPaths = DEFAULT_APPROVAL_CONFIG.protectedPaths;
-  const touchesProtected = plan.files.some((f) => protectedPaths.some((p) => f.includes(p)));
+  const touchesProtected = touchesProtectedPath(plan.files);
   if (touchesProtected && plan.approval === "AUTO") {
     return {
       approved: false,

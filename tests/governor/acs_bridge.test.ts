@@ -28,6 +28,7 @@ function makeStatus(overrides?: Partial<AcsStatus>): AcsStatus {
     proposal: false,
     violations: { window: 0, windowMax: 80, total: 0, totalMax: 150 },
     locked: false,
+    acsAvailable: true,
     ...overrides,
   };
 }

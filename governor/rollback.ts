@@ -55,10 +55,22 @@ export class Rollback {
    return id;
  }
 
-  /** Restore working tree to last committed state (git restore). */
+  /** Restore working tree — ONLY the given paths, never the whole tree.
+   *
+   *  A bare `git restore .` would revert the entire working tree to HEAD
+   *  and destroy unrelated uncommitted user work, including on rollback
+   *  paths that never executed anything (scope/approval rejection). Paths
+   *  are therefore mandatory; when called without paths (legacy callers) or
+   *  with an empty list, this is a SAFE NO-OP — nothing is restored, nothing
+   *  is destroyed. Callers that have not executed any writes should use
+   *  none() explicitly for the same effect. */
   async restore(paths?: string[]): Promise<RollbackResult> {
-    const target = paths?.join(" ") ?? ".";
-    const r = await this.deps.runCommand(`git restore ${target}`);
+    if (!paths || paths.length === 0) {
+      return { ok: true, method: "none", reason: "nothing to restore (no paths provided)" };
+    }
+    const target = paths.join(" ");
+    // `--` guards against paths beginning with "-" being parsed as flags.
+    const r = await this.deps.runCommand(`git restore -- ${target}`);
     return { ok: r.ok, method: "restore", reason: r.ok ? `restored ${target}` : `restore failed: ${r.stderr}` };
   }
 

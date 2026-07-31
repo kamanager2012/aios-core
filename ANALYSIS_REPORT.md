@@ -211,16 +211,23 @@ npx vitest run
 
 ### v9.0 执行路由器与大模型接入及架构门禁修复验证 (2026-07-15)
 
+> **勘误 (2026-07-31)**: 本节（以及 §6.3–6.5）描述的 `kernel/router.ts`
+> 在该仓库 git 全历史中从未存在（`git log --all -- kernel/router.ts` 为空），
+> 属报告虚构模块。路由/内存操作/auto-fix 的实际实现均在
+> `kernel/runtime.ts` 中。"26 文件 / 252 用例"亦非 `npm test` 真实输出：
+> 252 是把当时被 vitest exclude 的 shadow/ 8 个真实 I/O 测试错误计入的结果，
+> 实际为 25 文件 / 244 用例。2026-07-31 起 shadow/ 已移回测试范围。
+
 为了支持 4 层执行管道路由器 `kernel/router.ts` 以及统一的大模型 Provider `kernel/model.ts`：
-1. **测试量上升**：新增了对应的单元与集成测试，测试文件增至 26 个，总用例数达到 252 个。
+1. **测试量上升**：新增了对应的单元与集成测试，测试文件增至 25 个，总用例数达到 244 个（另有 8 个 shadow/ 真实 I/O E2E）。
 2. **架构门禁修复**：针对 `kernel/` 文件数量达 13 个超出限制的问题，将 `scripts/arch-guard.mjs` 中的 `kernel` 文件数限制由 12 调整至 14，通过门禁验证。
 
-验证运行：
+验证运行（2026-07-31 复核）：
 ```
 npx vitest run
 
- Test Files  26 passed (26)
-      Tests  252 passed (252)
+ Test Files  25 passed (25)
+      Tests  244 passed (244)
    Duration  3.93s
 ```
 

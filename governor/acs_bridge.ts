@@ -148,11 +148,17 @@ export class AcsBridge {
       return "ACS is locked";
     }
 
-    // ACS scope check
-    const outOfScope = plan.files.filter((f) => {
-      if (status.dirs.length === 0) return false; // no scope = no ACS enforcement
-      return !status.dirs.some((dir) => f.startsWith(dir));
-    });
+    // ACS not installed (no runtime dir): AIOS rules still apply, ACS rules
+    // are skipped — aios must keep working standalone.
+    if (!status.acsAvailable) {
+      return null;
+    }
+
+    // ACS scope check — FAIL CLOSED: with no active task scope, ACS baseline
+    // is read-only, so every planned write is out of scope. (Previously
+    // `dirs.length === 0` skipped enforcement entirely, silently disabling
+    // the ACS gate whenever the scope file was missing or unparsed.)
+    const outOfScope = plan.files.filter((f) => !status.dirs.some((dir) => f.startsWith(dir)));
     if (outOfScope.length > 0) {
       return `ACS scope violation: ${outOfScope.join(", ")}`;
     }

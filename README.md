@@ -24,8 +24,8 @@ aios-core/
 ├── kernel/       # 执行内核: planner + executor + verifier + reconciler + runtime + schema
 ├── memory/       # 项目记忆: current/ tasks/ decisions/ architecture/ incidents/ staging/
 ├── governor/     # 治理护栏: scope + approval + rollback + audit
-├── cli/          # 入口: aios run | plan | execute | verify | commit
-└── tests/        # 154 个测试
+├── cli/          # 入口: aios run | plan | status | context | replay
+└── tests/        # 244 个测试 (25 文件) + shadow/ 真实 I/O E2E
 ```
 
 ### 状态机
@@ -72,11 +72,8 @@ npm install
 # 完整流水线
 aios run "fix login bug" --project myapp
 
-# 分步执行
+# 分步执行（仅 plan/run 已实现；execute/verify/commit 尚未实现）
 aios plan "fix login bug" --project myapp
-aios execute
-aios verify
-aios commit
 
 # 查看状态
 aios status
@@ -89,7 +86,7 @@ aios replay --task task_042
 ## 测试
 
 ```bash
-npm test          # 154 个测试
+npm test          # 244 个测试（25 文件）
 npm run typecheck # TypeScript 类型检查
 ```
 

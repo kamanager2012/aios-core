@@ -18,6 +18,8 @@ import type { RuntimeAdapter } from "../kernel/adapter.js";
 import { createFallbackProvider, createOpenAIProvider } from "../kernel/model.js";
 import type { ModelProvider, OpenAIConfig } from "../kernel/model.js";
 import { ScopeValidator } from "../governor/scope.js";
+import { AcsClient } from "../governor/acs_client.js";
+import { AcsBridge } from "../governor/acs_bridge.js";
 import { Rollback } from "../governor/rollback.js";
 import { AuditLog } from "../governor/audit.js";
 import { MemoryStore } from "../memory/index.js";
@@ -116,11 +118,16 @@ function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: Execut
     now,
   });
 
+  // ACS-aware governance: scope reads live ACS runtime state, and the
+  // preflight gate rejects plans that ACS would block (locked / out of
+  // scope / high violation pressure). Reads only — no writes to ACS state.
+  const acs = new AcsClient();
+
   return {
     planner: adapter.planner,
     executor: adapter.executor,
     verifier: adapter.verifier,
-    scope: new ScopeValidator(),
+    scope: new ScopeValidator({ acs }),
     memory,
     rollback,
     audit,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { inferApproval, checkApproval } from "../../governor/approval.js";
+import { inferApproval, checkApproval, effectiveApproval } from "../../governor/approval.js";
 import type { Plan } from "../../kernel/schema/index.js";
 
 const basePlan: Plan = {
@@ -27,6 +27,31 @@ describe("inferApproval", () => {
 
   it("returns MANUAL for delete actions", () => {
     expect(inferApproval({ ...basePlan, steps: [{ order: 1, action: "delete", target: "src/a.ts" }] })).toBe("MANUAL");
+  });
+});
+
+describe("effectiveApproval", () => {
+  it("returns AUTO for unprotected low-risk plans", () => {
+    expect(effectiveApproval(basePlan)).toBe("AUTO");
+  });
+
+  it("returns MANUAL for explicit MANUAL", () => {
+    expect(effectiveApproval({ ...basePlan, approval: "MANUAL" })).toBe("MANUAL");
+  });
+
+  it("forces MANUAL when plan touches protected paths even if model said AUTO", () => {
+    // Regression: the model could self-approve config/secret-adjacent
+    // changes via `approval: AUTO` in its YAML — protected paths must
+    // override to MANUAL.
+    expect(effectiveApproval({ ...basePlan, files: [".env"] })).toBe("MANUAL");
+    expect(effectiveApproval({ ...basePlan, files: ["config/secrets/prod.json"] })).toBe("MANUAL");
+    expect(effectiveApproval({ ...basePlan, files: [".claude/settings.json"] })).toBe("MANUAL");
+    expect(effectiveApproval({ ...basePlan, files: ["CLAUDE.md"] })).toBe("MANUAL");
+  });
+
+  it("keeps AUTO for plans with a protected path among safe files", () => {
+    // .env.in.example is not .env
+    expect(effectiveApproval({ ...basePlan, files: ["src/a.ts", ".env.example"] })).toBe("AUTO");
   });
 });
 

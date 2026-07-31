@@ -2,9 +2,14 @@
 // Reads ACS runtime state from JSON files (no subprocess calls).
 //
 // Per Charter §9 Stage 1: read-only. This client reads:
-//   - ACTIVE_TASK.json  → scope dirs
-//   - VIOLATIONS.json   → violation events + scores
+//   - ACTIVE_TASK.json  → scope dirs (key: allowed_dirs)
+//   - VIOLATIONS.json   → violation events + window score (key: window_score)
 //   - LOCKED            → lock status
+//
+// Field names mirror the REAL ACS runtime file shapes (v5.x):
+//   ACTIVE_TASK.json: task_id / task, allowed_dirs, allowed_files,
+//                     blocked_commands, shadow_mode, proposal_required
+//   VIOLATIONS.json:  events, window_score
 //
 // No subprocess calls. No writes to ACS state.
 
@@ -22,6 +27,7 @@ export interface AcsStatus {
   proposal: boolean;
   violations: { window: number; windowMax: number; total: number; totalMax: number };
   locked: boolean;
+  acsAvailable: boolean;
 }
 
 export interface AcsViolationEvent {
@@ -51,12 +57,13 @@ export class AcsClient {
       shadow: task.shadow ?? false,
       proposal: task.proposal ?? false,
       violations: {
-        window: violations.windowScore ?? 0,
+        window: violations.window_score ?? 0,
         windowMax: 80,
-        total: violations.totalScore ?? 0,
+        total: violations.total_score ?? 0,
         totalMax: 150,
       },
       locked,
+      acsAvailable: existsSync(this.runtimeDir),
     };
   }
 
@@ -94,13 +101,21 @@ export class AcsClient {
   private readActiveTask(): { taskId?: string; dirs?: string[]; shadow?: boolean; proposal?: boolean } {
     try {
       const raw = readFileSync(path.join(this.runtimeDir, "ACTIVE_TASK.json"), "utf-8");
-      return JSON.parse(raw);
+      const data = JSON.parse(raw);
+      // Real ACS v5.x shape uses allowed_dirs / shadow_mode / proposal_required
+      // (task_id also exists); keep the old keys as fallbacks for legacy files.
+      return {
+        taskId: data.task_id ?? data.task,
+        dirs: data.allowed_dirs ?? data.dirs ?? [],
+        shadow: data.shadow_mode ?? false,
+        proposal: data.proposal_required ?? false,
+      };
     } catch {
       return {};
     }
   }
 
-  private readViolations(): { events?: AcsViolationEvent[]; windowScore?: number; totalScore?: number } {
+  private readViolations(): { events?: AcsViolationEvent[]; window_score?: number; total_score?: number } {
     try {
       const raw = readFileSync(path.join(this.runtimeDir, "VIOLATIONS.json"), "utf-8");
       return JSON.parse(raw);

@@ -28,12 +28,31 @@ function makeDeps() {
 afterEach(async () => { try { await rm(tmpDir, { recursive: true, force: true }); } catch {} });
 
 describe("Rollback", () => {
-  it("restore runs git restore", async () => {
+  it("restore runs git restore with -- separator", async () => {
     const { rb, commands } = makeDeps();
     const result = await rb.restore(["src/a.ts"]);
     expect(result.ok).toBe(true);
     expect(result.method).toBe("restore");
-    expect(commands[0]).toContain("git restore src/a.ts");
+    // `--` guards against paths beginning with "-" being parsed as flags
+    expect(commands[0]).toBe("git restore -- src/a.ts");
+  });
+
+  it("restore without paths is a safe no-op (never git restore .)", async () => {
+    // Regression: restore() used to default to ".", which reverts the whole
+    // working tree and destroys unrelated uncommitted user work.
+    const { rb, commands } = makeDeps();
+    const result = await rb.restore();
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("none");
+    expect(commands.length).toBe(0);
+    expect(result.reason).toContain("no paths");
+  });
+
+  it("restore with empty paths is a safe no-op", async () => {
+    const { rb, commands } = makeDeps();
+    const result = await rb.restore([]);
+    expect(result.method).toBe("none");
+    expect(commands.length).toBe(0);
   });
 
   it("revert runs git revert", async () => {
