@@ -33,6 +33,10 @@ function runCommand(cmd: string): { ok: boolean; stdout: string; stderr: string 
       encoding: "utf8",
       timeout: 60_000,
       stdio: ["pipe", "pipe", "pipe"],
+      // Recursion guard: any child spawned from here (e.g. the real vitest
+      // run in realRunTest) inherits this flag, so nested verifiers short-
+      // circuit instead of spawning an unbounded tree.
+      env: { ...process.env, AIOS_VERIFIER_OFF: "1" },
     });
     return { ok: true, stdout, stderr: "" };
   } catch (e: any) {
@@ -119,18 +123,41 @@ export function createRealDeps(
 
 // ── Real verifier deps ───────────────────────────────────────────────────
 
+// The E2E suite drives many tasks against an unchanged project, and each
+// task runs the real verifier. Running tsc/vitest subprocesses per task
+// makes scenario-heavy tests exceed the 60s per-test timeout. The project
+// does not change during a single E2E process, so verify results are cached
+// per process (recursion guard branch returns first in subprocesses).
+let buildCache: { ok: boolean; log: string } | null = null;
+let testCache: { ok: boolean; passed: number; failed: number; log: string } | null = null;
+
 function realRunBuild() {
+  if (buildCache) return buildCache;
   const r = runCommand("npx tsc --noEmit 2>&1");
-  return { ok: r.ok, log: r.stdout + r.stderr };
+  buildCache = { ok: r.ok, log: r.stdout + r.stderr };
+  return buildCache;
 }
 
 function realRunTest() {
-  const r = runCommand("npx vitest run 2>&1");
+  // Recursion guard: this E2E suite runs under `vitest run` at the project
+  // root; if it spawned a full `vitest run` subprocess, the subprocess would
+  // collect this very file and recurse forever (memory exhaustion → host
+  // crash). Subprocesses inherit AIOS_VERIFIER_OFF=1 from runCommand's env,
+  // so they return here instead of spawning again.
+  if (process.env.AIOS_VERIFIER_OFF === "1") {
+    return { ok: true, passed: 0, failed: 0, log: "(recursion guard active)" };
+  }
+  // Subprocess verifies unit/integration tests only (tests/ has no
+  // self-spawning tests); the E2E suite itself is already running in the
+  // parent vitest process.
+  if (testCache) return testCache;
+  const r = runCommand("npx vitest run tests/ 2>&1");
   const match = r.stdout.match(/Tests\s+(\d+)\s+passed/);
   const passed = match ? parseInt(match[1]!) : 0;
   const failMatch = r.stdout.match(/(\d+)\s+failed/);
   const failed = failMatch ? parseInt(failMatch[1]!) : 0;
-  return { ok: r.ok, passed, failed, log: r.stdout + r.stderr };
+  testCache = { ok: r.ok, passed, failed, log: r.stdout + r.stderr };
+  return testCache;
 }
 
 // ── Rule-based planner ───────────────────────────────────────────────────
