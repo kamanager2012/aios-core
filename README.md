@@ -2,6 +2,10 @@
 
 > Project Agent Runtime — 让 AI Agent 长期稳定地开发一个项目。
 
+> **Part of the [Agent Governance Stack](https://github.com/kamanager2012/agent-constraint-system)** — the execution-kernel layer above
+> [ACS](https://github.com/kamanager2012/agent-constraint-system) (command-level execution gate) and
+> [governor-core](https://github.com/kamanager2012/governor-core) (call-level policy engine).
+
 AIOS Core 是一个**单 Agent 软件工程执行内核**，用项目状态驱动 Agent 的开发行为。
 
 不是操作系统。不是平台。不是多 Agent 编排器。
