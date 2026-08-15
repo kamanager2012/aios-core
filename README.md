@@ -9,6 +9,8 @@
 AIOS Core is a **single-agent software engineering execution kernel** that uses
 project state to drive an agent's development behavior.
 
+Project overview: [Kama Projects](https://kamanager2012.github.io/).
+
 Not an operating system. Not a platform. Not a multi-agent orchestrator.
 
 ## Core Idea
