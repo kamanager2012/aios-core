@@ -105,10 +105,22 @@ export class ScopeValidator {
   }
 
   validatePath(path: string): boolean {
-    const normalized = pathPosix.normalize(path.replace(/\\/g, "/"));
-    // Canonical scope is project-relative. Absolute targets and traversal are
-    // rejected regardless of policy profile.
-    if (pathPosix.isAbsolute(normalized) || normalized === ".." || normalized.startsWith("../")) {
+    // Canonical paths are project-relative across every supported host. Reject
+    // host-specific absolute/drive/home forms before POSIX normalization so a
+    // Windows path cannot be misread as a relative POSIX path on Linux/WSL.
+    const raw = path.trim().replace(/\\/g, "/");
+    if (!raw || raw.includes("\0")) return false;
+    if (raw === "." || raw === "~" || raw.startsWith("~/")) return false;
+    if (/^[A-Za-z]:/.test(raw)) return false; // Windows drive absolute/relative forms.
+    if (raw.startsWith("//")) return false;   // UNC/network/device paths.
+
+    const normalized = pathPosix.normalize(raw);
+    if (
+      normalized === "." ||
+      pathPosix.isAbsolute(normalized) ||
+      normalized === ".." ||
+      normalized.startsWith("../")
+    ) {
       return false;
     }
     if (this.matchesAny(normalized, this.policy.deniedPaths)) return false;
