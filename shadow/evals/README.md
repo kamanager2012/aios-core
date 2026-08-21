@@ -7,7 +7,7 @@ It is intentionally outside the npm package (`package.json#files`) and outside t
 ## Rules
 
 1. **Corpus is data, not enforcement.** Import scenarios, expected outcomes, provenance and known failures; do not import another runtime or agent loop.
-2. **Raw imports are immutable snapshots.** Preserve source semantics and pin the source repository revision.
+2. **Source-semantic snapshots are provenance-pinned.** Preserve scenario IDs, fields, values, expectations and notes, and pin the source repository revision. Formatting may be normalized; byte identity is not claimed unless a hash says so.
 3. **Normalization is vendor-neutral.** A case describes input + expected result. Vendor/agent adapters produce observations separately.
 4. **No benchmark laundering.** Known false positives, bypasses and failures remain visible after migration.
 5. **Regression first.** A new agent/model/policy version is compared against the same case IDs; PASS→FAIL is a regression regardless of vendor.
