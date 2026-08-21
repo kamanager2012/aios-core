@@ -8,22 +8,41 @@ import {
   type PolicyEvalObservation,
   type PolicyEvalResult,
 } from "../../kernel/eval.js";
+import type { CanonicalPolicy } from "../../governor/policy.js";
 import { ScopeValidator } from "../../governor/scope.js";
 import { loadAcsV1Cases } from "../helpers/acs_corpus.js";
 
 interface StoredBaseline {
-  metrics: { falseAllows: number; falseDenies: number };
+  profile: string;
+  policy: CanonicalPolicy;
+  metrics: {
+    passed: number;
+    failed: number;
+    falseAllows: number;
+    falseDenies: number;
+    unexpectedAsks: number;
+    missingObservations: number;
+    dangerBlockRate: number;
+    falsePositiveRate: number;
+    accuracy: number;
+  };
   falseAllowIds: string[];
   falseDenyIds: string[];
 }
 
-function loadBaseline(): StoredBaseline {
+interface HardenedBaseline extends StoredBaseline {
+  predecessor: string;
+  improvementIds: string[];
+  regressionIds: string[];
+}
+
+function loadJson<T>(version: string): T {
   return JSON.parse(
     readFileSync(
-      join(process.cwd(), "shadow", "evals", "policy", "canonical-v1", "baseline.json"),
+      join(process.cwd(), "shadow", "evals", "policy", version, "baseline.json"),
       "utf8",
     ),
-  ) as StoredBaseline;
+  ) as T;
 }
 
 function observe(testCase: PolicyEvalCase, scope: ScopeValidator): PolicyEvalObservation {
@@ -79,35 +98,44 @@ function storedBaselineResults(cases: PolicyEvalCase[], baseline: StoredBaseline
 }
 
 describe("canonical default policy hardening", () => {
-  it("improves the stored baseline without introducing a PASS-to-FAIL regression", () => {
+  it("matches canonical-v1.1 and has zero regression from canonical-v1", () => {
     const cases = loadAcsV1Cases();
-    const baseline = loadBaseline();
+    const baseline = loadJson<StoredBaseline>("canonical-v1");
+    const hardened = loadJson<HardenedBaseline>("canonical-v1.1");
     const baselineResults = storedBaselineResults(cases, baseline);
     const scope = new ScopeValidator();
     const candidate = evaluatePolicySuite(cases, cases.map((testCase) => observe(testCase, scope)));
     const comparison = comparePolicyEvalResults(baselineResults, candidate.results);
 
-    expect(comparison.regressions).toEqual([]);
-    expect(candidate.missingObservations).toBe(0);
-    expect(candidate.unexpectedAsks).toBe(0);
-    expect(candidate.falseAllows).toBeLessThan(baseline.metrics.falseAllows);
-    expect(candidate.falseDenies).toBe(baseline.metrics.falseDenies);
+    expect(hardened.profile).toBe("aios-default-policy-hardened-v1.1");
+    expect(hardened.predecessor).toBe("canonical-v1");
+    expect(scope.policy).toEqual(hardened.policy);
 
-    console.log("CANONICAL_POLICY_HARDENING", JSON.stringify({
-      total: candidate.total,
+    expect({
       passed: candidate.passed,
       failed: candidate.failed,
       falseAllows: candidate.falseAllows,
       falseDenies: candidate.falseDenies,
+      unexpectedAsks: candidate.unexpectedAsks,
+      missingObservations: candidate.missingObservations,
       dangerBlockRate: candidate.dangerBlockRate,
       falsePositiveRate: candidate.falsePositiveRate,
       accuracy: candidate.accuracy,
-      improvements: comparison.improvements.map((change) => change.caseId),
-      regressions: comparison.regressions.map((change) => change.caseId),
-      remainingFailures: candidate.results.filter((result) => !result.pass).map((result) => ({
-        id: result.caseId,
-        kind: result.failureKind,
-      })),
-    }));
+    }).toEqual(hardened.metrics);
+
+    const candidateFalseAllowIds = candidate.results
+      .filter((result) => result.failureKind === "false_allow")
+      .map((result) => result.caseId);
+    const candidateFalseDenyIds = candidate.results
+      .filter((result) => result.failureKind === "false_deny")
+      .map((result) => result.caseId);
+    const improvementIds = comparison.improvements.map((change) => change.caseId);
+    const regressionIds = comparison.regressions.map((change) => change.caseId);
+
+    expect(candidateFalseAllowIds).toEqual(hardened.falseAllowIds);
+    expect(candidateFalseDenyIds).toEqual(hardened.falseDenyIds);
+    expect(improvementIds).toEqual(hardened.improvementIds);
+    expect(regressionIds).toEqual(hardened.regressionIds);
+    expect(regressionIds).toEqual([]);
   });
 });
