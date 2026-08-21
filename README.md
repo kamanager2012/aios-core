@@ -21,7 +21,8 @@ PLAN → EXECUTE → VERIFY
               ↓
           Regression
 
-Policy Eval Corpus ─→ Agent/Vendor Adapter Observation ─→ Eval Report
+Canonical Policy ─→ Vendor Adapter / Native Controls
+Policy Eval Corpus ─→ Agent/Vendor Observation ─→ Eval Report
 ```
 
 A stronger model does not remove the need for verification. It changes what should be verified. AIOS focuses on **task outcome evidence and regression**, while native agent runtimes remain responsible for their own sandbox/network/permission enforcement.
@@ -76,7 +77,10 @@ aios-core/
 │   ├── invariant.ts     # state invariants
 │   ├── failure.ts       # failure taxonomy
 │   └── statehash.ts     # execution fingerprint + hash chain
-├── governor/            # scope, approval, rollback, audit, limits
+├── governor/
+│   ├── policy.ts        # canonical policy schema / validation / normalization
+│   ├── scope.ts         # deterministic path/command semantics
+│   └── ...              # approval / rollback / audit / limits + legacy adapters
 ├── memory/              # project-state memory and staging
 ├── shadow/evals/        # provenance-pinned eval corpora; not shipped in npm
 ├── cli/
@@ -92,6 +96,32 @@ IDLE → PLAN → EXECUTE → VERIFY → COMMIT → DONE
 ```
 
 Reliability does **not** add states. Evidence is evaluated inside the existing VERIFY → decision boundary.
+
+## Canonical policy semantics
+
+`governor/policy.ts` is a pure, vendor-neutral policy data layer. It provides:
+
+- strict schema validation
+- deterministic trim/dedup normalization
+- field-level overlays where an explicit `[]` remains empty rather than silently falling back to defaults
+- optional `elevatedCommands`, `askPaths`, and `askCommands` hints for vendor adapters
+
+`governor/scope.ts` consumes the same schema and provides deterministic semantics for:
+
+- project-relative path normalization and traversal rejection
+- command-chain splitting
+- quoted-literal handling
+- command substitution inspection
+- simple variable-indirection expansion
+- mass-delete signals
+- shell write-target extraction
+- elevated general-purpose executor signals
+
+This layer is **not** an OS security boundary. It is a normalized semantic/test surface that adapters may translate into native vendor controls.
+
+The default AIOS CLI now constructs the canonical `ScopeValidator` directly and does **not** instantiate or read ACS runtime state. Legacy ACS compatibility remains explicit opt-in through a minimal structural interface while old adapters are phased out.
+
+Importantly, this convergence step strengthens parsing without silently replacing the existing AIOS default allow/deny profile with `governor-core`'s broader policy profile.
 
 ## Audit and replay
 
@@ -142,8 +172,8 @@ The migration gate fixes the source revision and requires all **105** source sce
 
 | Existing project | What survives in the canonical project |
 |---|---|
-| `agent-constraint-system` | benchmark corpus, known bypasses/false positives, constraint taxonomy, adapter evidence |
-| `governor-core` | canonical policy semantics, validation/normalization, audit semantics |
+| `agent-constraint-system` | benchmark corpus, known bypasses/false positives, constraint taxonomy, optional legacy adapter evidence |
+| `governor-core` | canonical policy schema, parsing/normalization semantics, adversarial test lessons; not its generic GovernanceEngine product shell |
 | `aios-core` | state machine, evidence verification, invariants, recovery, replay, rollback, project-state memory |
 
 Native Codex/Claude/Gemini/other runtime security controls should be used where available rather than rebuilding another sandbox or permission engine.
@@ -166,7 +196,7 @@ aios replay --last
 aios replay --task task_042
 ```
 
-The existing CLI remains backward compatible. Task-contract and eval APIs are currently exposed at the kernel/package level while CLI ergonomics are kept out of the foundation merge.
+The existing CLI remains backward compatible at the command surface. Canonical execution no longer requires ACS runtime files to be present. Task-contract, reliability, eval, and policy APIs are exposed at the package level while CLI ergonomics remain deliberately narrow.
 
 ## Checks
 
@@ -174,7 +204,7 @@ The existing CLI remains backward compatible. Task-contract and eval APIs are cu
 npm run check
 ```
 
-`check` runs the architecture guard, TypeScript type checking, and the full Vitest suite, including corpus migration integrity checks.
+`check` runs the architecture guard, TypeScript type checking, and the full Vitest suite, including corpus migration integrity and canonical policy-boundary checks.
 
 ## Design constraints
 
@@ -184,6 +214,8 @@ npm run check
 - Missing required evidence is never success.
 - Named invariants are executable acceptance requirements, not documentation-only fields.
 - Reliability verdicts are derived from audited inputs rather than duplicated as mutable truth.
+- Canonical policy semantics are pure data/decision semantics, not a replacement sandbox.
+- The default CLI/runtime/scope must not depend on concrete ACS runtime modules.
 - Eval corpora are data; vendor execution lives behind adapters.
 - Project memory stores project facts/decisions, not chats, model thoughts, or vector personality memory.
 - Staging/snapshot isolate in-flight state; only COMMIT promotes state.
