@@ -29,6 +29,10 @@
       "types": "./cli/codex.ts",
       "default": "./cli/codex.ts"
     },
+    "./codex/evidence": {
+      "types": "./cli/codex_evidence.ts",
+      "default": "./cli/codex_evidence.ts"
+    },
     "./policy": {
       "types": "./governor/policy.ts",
       "default": "./governor/policy.ts"
