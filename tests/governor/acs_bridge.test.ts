@@ -98,7 +98,6 @@ describe("AcsBridge", () => {
   });
 
   it("returns SAFE_DENY when AIOS denies (protected path) but ACS allows", () => {
-    // ACS scope includes .claude/ so ACS allows, but AIOS denies (protected path)
     const bridge = new AcsBridge(createMockClient({
       status: () => makeStatus({ dirs: [".claude/", "src/"] }),
       getScope: () => [".claude/", "src/"],
@@ -138,11 +137,20 @@ describe("AcsBridge", () => {
 // ── ScopeValidator with ACS ─────────────────────────────────────────────────
 
 describe("ScopeValidator ACS integration", () => {
-  it("denies ACS protected paths", () => {
+  it("does not inject ACS/Claude-specific paths into canonical default policy", () => {
     const sv = new ScopeValidator();
-    expect(sv.validatePath(".claude/audit/entry.json")).toBe(false);
-    expect(sv.validatePath(".claude/hooks/acs_lite.py")).toBe(false);
-    expect(sv.validatePath(".claude/settings.json")).toBe(false);
+    expect(sv.validatePath(".claude/audit/entry.json")).toBe(true);
+    expect(sv.validatePath(".claude/hooks/acs_lite.py")).toBe(true);
+    expect(sv.validatePath(".claude/settings.json")).toBe(true);
+  });
+
+  it("denies ACS protected paths when legacy ACS compatibility is explicitly enabled", () => {
+    const sv = new ScopeValidator({
+      acs: createMockClient({ getScope: () => [".claude/"] }),
+    });
+    const result = sv.validatePlanWithAcs(makePlan({ files: [".claude/hooks/acs_lite.py"] }));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("ACS protected path");
   });
 
   it("validatePlanWithAcs passes for in-scope plan", () => {
