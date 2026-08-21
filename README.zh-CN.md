@@ -1,66 +1,103 @@
 # AIOS Core
 
-> Project Agent Runtime — 让 AI Agent 长期稳定地开发一个项目。
+> Agent Reliability Kernel — 面向 Coding Agent 的任务契约、证据门、确定性验证、回放与回滚内核。
 
-> **Part of the [Agent Governance Stack](https://github.com/kamanager2012/agent-constraint-system)** — the execution-kernel layer above
-> [ACS](https://github.com/kamanager2012/agent-constraint-system) (command-level execution gate) and
-> [governor-core](https://github.com/kamanager2012/governor-core) (call-level policy engine).
+AIOS Core 正在从原来的三层 **Agent Governance Stack** 收敛成一个 canonical reliability 项目。目标不是再造一个 Agent Loop、Sandbox 或模型路由器，而是回答一个更实际的问题：**Agent 声称任务完成以后，我们能不能用结构化证据证明它真的完成了，并且在 Agent/模型版本升级后量化回归。**
 
-AIOS Core 是一个**单 Agent 软件工程执行内核**，用项目状态驱动 Agent 的开发行为。
-
-不是操作系统。不是平台。不是多 Agent 编排器。
+项目总览：[Kama Projects](https://kamanager2012.github.io/)。
 
 ## 核心思想
 
-```
-先规划。后审批。再执行。最后验证，落库。
+```text
+Task Contract
+    ↓
+PLAN → EXECUTE → VERIFY
+                  ↓
+             Evidence Gate
+              ↙        ↘
+          COMMIT      ROLLBACK
+              ↓
+        Replay / Regression
 ```
 
-- **项目状态驱动** — Agent 由项目事实和决策驱动，不是上下文
-- **单 Agent** — 任何时刻只有一个执行主体
-- **可回滚** — 任何写操作配套 rollback 路径
-- **项目记忆是核心** — 持久化项目事实和决策；不存聊天、模型思考、向量
+模型越强，不代表不需要验证；只是验证重点从“限制模型每一步”转向“证明最终执行结果成立”。AIOS 因此聚焦**任务结果证据**，不和上游 Agent Runtime 重复建设底层安全能力。
+
+## Task Contract
+
+任务契约定义一个任务被接受前必须具备的最低证据：
+
+```ts
+const contract = {
+  version: 1,
+  requiredEvidence: ["test", "build", "diff"],
+  acceptance: {
+    minTestsPassed: 20,
+  },
+};
+```
+
+Verifier 当前会产生 build、test、lint、E2E、diff 的结构化证据。Reliability Gate 输出三种结果：
+
+- `PASS` — 所有必需证据存在且满足契约。
+- `FAIL` — 必需证据存在，但验证失败或不满足接受条件。
+- `INCOMPLETE` — 必需证据缺失，不能把任务当成已完成。
+
+没有 Task Contract 的旧任务继续保持原有 verify-pass 行为，避免为重构破坏现有调用。
 
 ## 架构
 
-```
+```text
 aios-core/
-├── kernel/       # 执行内核: planner + executor + verifier + reconciler + runtime + schema
-├── memory/       # 项目记忆: current/ tasks/ decisions/ architecture/ incidents/ staging/
-├── governor/     # 治理护栏: scope + approval + rollback + audit
-├── cli/          # 入口: aios run | plan | status | context | replay
-└── tests/        # 244 个测试 (25 文件) + shadow/ 真实 I/O E2E
+├── kernel/
+│   ├── runtime.ts       # 状态机唯一驱动器（SSOT）
+│   ├── planner.ts       # Task → 冻结 Plan
+│   ├── executor.ts      # 执行适配边界
+│   ├── verifier.ts      # 结构化验证证据
+│   ├── reliability.ts   # Evidence Gate + 回归比较（纯函数）
+│   ├── reconciler.ts    # 唯一确定性 COMMIT/ROLLBACK 决策出口
+│   ├── replay.ts        # 确定性审计回放
+│   ├── invariant.ts     # 状态不变量
+│   ├── failure.ts       # 失败分类
+│   └── statehash.ts     # 执行指纹 + 哈希链
+├── governor/            # scope / approval / rollback / audit / limits
+├── memory/              # 项目状态记忆与 staging
+├── cli/
+└── tests/
 ```
 
-### 状态机
+### 状态机保持冻结
 
-```
+```text
 IDLE → PLAN → EXECUTE → VERIFY → COMMIT → DONE
-                                     │
-                                     │ 失败
-                                     ▼
-                                 ROLLBACK → DONE
+                         │
+                         └──────→ ROLLBACK → DONE
 ```
 
-### 核心模块
+这次 reliability 重构**不增加任何状态**。Evidence Gate 位于现有 VERIFY → decision 边界内，不制造第二套执行状态机。
 
-| 模块 | 职责 |
-|------|------|
-| `kernel/runtime.ts` | 状态机唯一驱动器 (SSOT) |
-| `kernel/planner.ts` | 任务理解 + 方案生成 |
-| `kernel/executor.ts` | 改代码、跑命令、生成 diff |
-| `kernel/verifier.ts` | 验证执行结果 |
-| `kernel/reconciler.ts` | 纯函数决策出口（禁止调模型、禁止 IO） |
-| `kernel/invariant.ts` | 状态不变量检查 |
-| `kernel/failure.ts` | 失败分类（transient/deterministic/permission/corruption/resource） |
-| `kernel/statehash.ts` | 执行指纹 + 哈希链（可验证确定性） |
-| `governor/scope.ts` | 路径/命令/文件类型白黑名单 |
-| `governor/approval.ts` | AUTO/MANUAL 两级审批 |
-| `governor/rollback.ts` | git restore / git revert / snapshot 回滚 |
-| `governor/audit.ts` | append-only 审计日志 |
-| `governor/limits.ts` | 终止条件（maxTurns, maxContext, maxRetries） |
-| `memory/index.ts` | 项目记忆存储（append-only + current 可覆盖） |
-| `memory/context.ts` | 上下文窗口管理 |
+## Regression
+
+`kernel/reliability.ts` 可以按 `taskId` 对两个 Agent/模型版本的 reliability run 进行比较，并输出：
+
+- regression：`PASS → INCOMPLETE/FAIL`、`INCOMPLETE → FAIL`
+- improvement：`FAIL/INCOMPLETE → PASS`、`FAIL → INCOMPLETE`
+- 未变化任务
+- candidate 缺失任务
+- candidate 新增任务
+
+目标不是再造一个通用 Benchmark 排行榜，而是形成面向真实项目的 **Agent CI**。
+
+## 原三项目如何收敛
+
+不会把三个仓库机械复制到一起。
+
+| 原项目 | 应保留下来的资产 |
+|---|---|
+| `agent-constraint-system` | benchmark scenarios、known bypass/false positive、constraint taxonomy、adapter evidence |
+| `governor-core` | canonical policy 语义、policy validation/normalization、audit 语义 |
+| `aios-core` | 执行状态机、verification、invariant、failure recovery、replay、rollback、project-state memory |
+
+Codex / Claude / Gemini 等 Agent Runtime 已经原生支持的 sandbox、permission、network policy 等能力，优先调用上游能力，而不是自己重做第二套。
 
 ## 安装
 
@@ -76,10 +113,10 @@ npm install
 # 完整流水线
 aios run "fix login bug" --project myapp
 
-# 分步执行（仅 plan/run 已实现；execute/verify/commit 尚未实现）
+# 规划
 aios plan "fix login bug" --project myapp
 
-# 查看状态
+# 状态
 aios status
 
 # 回放
@@ -87,39 +124,38 @@ aios replay --last
 aios replay --task task_042
 ```
 
-## 测试
+现有 CLI 保持兼容；Task Contract 当前先通过 kernel API 暴露，CLI 体验后续再收敛，避免第一阶段扩大范围。
+
+## 验证
 
 ```bash
-npm test          # 244 个测试（25 文件）
-npm run typecheck # TypeScript 类型检查
+npm run check
 ```
 
-## 项目记忆
-
-只有 COMMIT 能写正式 memory：
-
-| 目录 | 可变性 | 写时机 |
-|------|--------|--------|
-| `current/` | **唯一可覆盖** | 状态推进 |
-| `decisions/` | append-only | 决策落地 |
-| `tasks/` | append-only | 任务完成 |
-| `incidents/` | append-only | 失败复盘 |
+`check` 会依次执行 architecture guard、TypeScript typecheck 和完整 Vitest 测试。
 
 ## 设计约束
 
-- Reconciler 是**唯一**决策出口，纯函数，禁止调模型、禁止 IO
-- Governor 是护栏不是引擎 — 拦住不该做的，但不驱动该做的
-- staging/snapshot 隔离执行中状态，COMMIT 才 promote 到正式 memory
-- 50-task shadow 测试验证确定性：相同输入 → 相同输出
+- Runtime 是唯一状态机驱动器。
+- Reconciler 是唯一决策出口，必须保持纯函数、禁止模型调用、禁止 IO。
+- Task Contract 只能让验收更严格，不能绕过现有 build/test/lint/e2e 失败。
+- 缺少必需证据绝不等于成功。
+- 项目记忆只保存项目事实和决策，不保存聊天、模型思考或向量人格记忆。
+- staging/snapshot 隔离执行中状态，只有 COMMIT 才能 promote。
+- Audit / replay 必须保持确定性和可独立验证。
 
 ## 不做什么
 
-❌ 多 Agent / Mesh / 工作流编排
-❌ 向量库 / 知识图谱 / 人格记忆
-❌ 预算 / 成本追踪 / 经济系统
-❌ 自动演化 / 云调度
+AIOS Core 不做：
 
-只做：项目记忆、执行、治理、恢复。
+- 新的通用 Agent Loop
+- Multi-Agent Mesh / 通用编排框架
+- 第二套 Sandbox / 网络隔离层
+- 模型 Router
+- 向量记忆 / 人格系统
+- 云调度 / 自动经济系统
+
+目标收窄为：**为真实 Coding Agent 工作提供可靠的执行验收和回归证据。**
 
 ## License
 
