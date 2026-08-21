@@ -16,10 +16,19 @@ describe("ScopeValidator", () => {
     expect(sv.validatePath("/usr/bin/bash")).toBe(false);
   });
 
-  it("denies denied file types", () => {
+  it("denies traversal, absolute paths, and denied-path case variants", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validatePath("../../etc/passwd")).toBe(false);
+    expect(sv.validatePath("../outside.txt")).toBe(false);
+    expect(sv.validatePath("/tmp/absolute.txt")).toBe(false);
+    expect(sv.validatePath("config/.ENV")).toBe(false);
+  });
+
+  it("denies denied file types case-insensitively", () => {
     const sv = new ScopeValidator();
     expect(sv.validateFileType("cert.pem")).toBe(false);
     expect(sv.validateFileType("server.key")).toBe(false);
+    expect(sv.validateFileType("CERT.PEM")).toBe(false);
     expect(sv.validateFileType("src/app.ts")).toBe(true);
   });
 
@@ -46,15 +55,62 @@ describe("ScopeValidator", () => {
 
   it("rejects command chaining with dangerous second command", () => {
     const sv = new ScopeValidator();
-    expect(sv.validateCommand("git; rm -rf /")).toBe(false);
+    expect(sv.validateCommand("git status; rm -rf /")).toBe(false);
     expect(sv.validateCommand("git status && sudo reboot")).toBe(false);
     expect(sv.validateCommand("echo hi | rm -rf /")).toBe(false);
+    expect(sv.validateCommand("git status\nrm -rf /")).toBe(false);
+  });
+
+  it("rejects live command substitutions but not quoted dangerous-looking literals", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validateCommand("echo $(rm -rf /)")).toBe(false);
+    expect(sv.validateCommand("echo `rm -rf /`")).toBe(false);
+    expect(sv.validateCommand('echo "rm -rf /"')).toBe(true);
+    expect(sv.validateCommand("echo 'sudo reboot'")).toBe(true);
+    expect(sv.validateCommand('echo "$(rm -rf /)"')).toBe(false);
+  });
+
+  it("resolves simple variable-indirection bypasses before validation", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validateCommand("X=rm; $X -rf /")).toBe(false);
+    expect(sv.validateCommand("X=rm; ${X} -rf /")).toBe(false);
+    expect(sv.validateCommand("A=rm; B=$A; $B -rf /")).toBe(false);
+    expect(sv.validateCommand("FOO=bar git status")).toBe(true);
+    expect(sv.validateCommand("X=echo; $X hi")).toBe(true);
   });
 
   it("allows safe chained commands", () => {
     const sv = new ScopeValidator();
     expect(sv.validateCommand("git status && git log")).toBe(true);
     expect(sv.validateCommand("tsc && vitest")).toBe(true);
+  });
+
+  it("flags mass-deletion semantics separately from the ordinary allow-list", () => {
+    const sv = new ScopeValidator();
+    expect(sv.isMassDelete("find . -delete")).toBe(true);
+    expect(sv.isMassDelete("find . -exec rm {} +")).toBe(true);
+    expect(sv.isMassDelete("rm -rf build/*")).toBe(true);
+    expect(sv.isMassDelete("git status")).toBe(false);
+    expect(sv.isMassDelete('echo "find . -delete"')).toBe(false);
+  });
+
+  it("applies project path policy to shell write targets", () => {
+    const sv = new ScopeValidator();
+    expect(sv.commandTargetsDeniedPath("echo x > /etc/passwd")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > ../../outside.txt")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > ~/.ssh/authorized_keys")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > .env")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > logs/out.txt")).toBe(false);
+    expect(sv.commandTargetsDeniedPath("cp template.txt dist/out.txt")).toBe(false);
+  });
+
+  it("surfaces elevated general-purpose executors without changing default decisions", () => {
+    const sv = new ScopeValidator({
+      policy: { ...DEFAULT_POLICY, elevatedCommands: ["node", "npm"] },
+    });
+    expect(sv.validateCommand("node build.js")).toBe(true);
+    expect(sv.usesElevatedCommand("node build.js")).toBe(true);
+    expect(sv.usesElevatedCommand("git status")).toBe(false);
   });
 
   it("supports custom policies", () => {
@@ -72,5 +128,15 @@ describe("ScopeValidator", () => {
     expect(sv.validatePath("lib/out.ts")).toBe(false);
     expect(sv.validateCommand("git")).toBe(false);
     expect(sv.validateCommand("node")).toBe(true);
+  });
+
+  it("keeps legacy ACS scope opt-in instead of canonical default", () => {
+    const acs = {
+      isLocked: () => false,
+      getScope: () => ["src/"],
+    };
+    const sv = new ScopeValidator({ acs });
+    const plan = { files: ["src/a.ts"], scope: ["src/**"], risk: "low" as const, task: "t", steps: [], tests: [], rollback: "", approval: "AUTO" as const, createdAt: "", frozen: false };
+    expect(sv.validatePlanWithAcs(plan as any)).toEqual({ ok: true });
   });
 });
