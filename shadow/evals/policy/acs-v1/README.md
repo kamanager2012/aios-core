@@ -24,9 +24,9 @@ These failures are intentionally preserved. Migration must not turn them into pa
 
 ## Normalization
 
-Raw ACS fields map to the vendor-neutral `kernel/eval.ts` model as follows:
+The provenance-pinned ACS source-semantic fields map to the vendor-neutral `kernel/eval.ts` model as follows:
 
-| ACS raw | Policy eval |
+| ACS source | Policy eval |
 |---|---|
 | `expected: "block"` | `expected: "deny"` |
 | `expected: "allow"` | `expected: "allow"` |
@@ -37,10 +37,12 @@ Raw ACS fields map to the vendor-neutral `kernel/eval.ts` model as follows:
 
 ACS bypass methods are **not runtime logic** in the new project. When normalized, each transformed input should become its own stable derived case (for example `bash-001::base64`) so every adapter sees the exact same input.
 
-## Why raw snapshots remain here
+## Why source-semantic snapshots remain here
+
+The files under `raw/` preserve the source scenario IDs, fields, values, expectations and notes from the pinned revision; JSON formatting may be normalized, so byte-for-byte identity is not claimed.
 
 The old Python runner imports `acs_core.guard` and `acs_core.paths` directly. Copying that runner would re-introduce ACS as a required runtime and defeat the merger. The new architecture keeps:
 
-- raw cases + expectations + provenance here;
+- provenance-pinned source-semantic cases + expectations here;
 - vendor-neutral result semantics in `kernel/eval.ts`;
 - vendor-specific execution in adapters to be added independently.
