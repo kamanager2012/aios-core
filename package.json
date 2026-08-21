@@ -25,6 +25,10 @@
       "types": "./kernel/eval.ts",
       "default": "./kernel/eval.ts"
     },
+    "./policy": {
+      "types": "./governor/policy.ts",
+      "default": "./governor/policy.ts"
+    },
     "./governor": {
       "types": "./governor/scope.ts",
       "default": "./governor/scope.ts"
