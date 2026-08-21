@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replayTask } from "../../kernel/replay.js";
+import { replayTask, stateAtPoint } from "../../kernel/replay.js";
 import type { AuditEntry } from "../../governor/audit.js";
 import type { EvidenceItem, Plan, TaskContract, VerificationReport } from "../../kernel/schema/index.js";
 
@@ -94,6 +94,17 @@ describe("reliability replay", () => {
     expect(trajectory.finalReliabilityVerdict?.status).toBe("PASS");
     expect(trajectory.points[1]?.reliabilityVerdict?.status).toBe("PASS");
     expect(trajectory.points[2]?.reliabilityVerdict?.status).toBe("PASS");
+  });
+
+  it("reconstructs cumulative contract/evidence/verdict at a later audit point", () => {
+    const entries = auditFor(makePlan(), makeVerify(passingEvidence), "COMMIT");
+    const point = stateAtPoint(entries, 3);
+
+    expect(point?.phase).toBe("COMMIT");
+    expect(point?.plan?.contract).toEqual(contract);
+    expect(point?.verifyReport?.evidence).toEqual(passingEvidence);
+    expect(point?.reliabilityVerdict?.status).toBe("PASS");
+    expect(point?.decision).toBe("COMMIT");
   });
 
   it("reconstructs INCOMPLETE when required evidence was missing", () => {
