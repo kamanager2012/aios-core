@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { evaluatePolicySuite, type PolicyEvalCase, type PolicyEvalObservation } from "../../kernel/eval.js";
+import type { CanonicalPolicy } from "../../governor/policy.js";
 import { ScopeValidator } from "../../governor/scope.js";
 import { loadAcsV1Cases } from "../helpers/acs_corpus.js";
 
@@ -9,6 +10,7 @@ interface CanonicalBaseline {
   schemaVersion: number;
   profile: string;
   policySemanticsCommit: string;
+  policy: CanonicalPolicy;
   sourceCorpus: { name: string; commit: string; totalCases: number };
   metrics: {
     passed: number;
@@ -67,14 +69,24 @@ describe("canonical policy qualification on ACS v1 corpus", () => {
   it("matches the pinned canonical-v1 baseline without executing corpus commands", () => {
     const cases = loadAcsV1Cases();
     const baseline = loadBaseline();
-    const scope = new ScopeValidator();
+    const scope = new ScopeValidator({ policy: baseline.policy });
     const observations = cases.map((testCase) => observeCanonicalPolicy(testCase, scope));
     const report = evaluatePolicySuite(cases, observations);
 
     expect(baseline.schemaVersion).toBe(1);
+    expect(baseline.profile).toBe("aios-default-policy-pre-hardening");
     expect(baseline.policySemanticsCommit).toBe("aa927b7ef1488133b94bde274121281d6c0b0797");
     expect(baseline.sourceCorpus.name).toBe("acs-v1");
     expect(baseline.sourceCorpus.totalCases).toBe(105);
+    expect(baseline.policy.allowedPaths).toEqual(["**/*"]);
+    expect(baseline.policy.deniedCommands).toEqual([
+      "rm -rf /",
+      "sudo",
+      "shutdown",
+      "reboot",
+      "mkfs",
+      "dd if=",
+    ]);
 
     expect(cases).toHaveLength(105);
     expect(observations).toHaveLength(105);
