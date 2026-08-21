@@ -24,6 +24,21 @@ describe("ScopeValidator", () => {
     expect(sv.validatePath("config/.ENV")).toBe(false);
   });
 
+  it("fails closed on Windows, UNC, home, empty and NUL-containing paths", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validatePath("C:\\Windows\\System32\\drivers\\etc\\hosts")).toBe(false);
+    expect(sv.validatePath("C:/Windows/System32/drivers/etc/hosts")).toBe(false);
+    expect(sv.validatePath("C:relative\\escape.txt")).toBe(false);
+    expect(sv.validatePath("\\\\server\\share\\payload.txt")).toBe(false);
+    expect(sv.validatePath("//server/share/payload.txt")).toBe(false);
+    expect(sv.validatePath("~/outside.txt")).toBe(false);
+    expect(sv.validatePath("~")).toBe(false);
+    expect(sv.validatePath("")).toBe(false);
+    expect(sv.validatePath("   ")).toBe(false);
+    expect(sv.validatePath(".")).toBe(false);
+    expect(sv.validatePath("src/\0payload.ts")).toBe(false);
+  });
+
   it("denies denied file types case-insensitively", () => {
     const sv = new ScopeValidator();
     expect(sv.validateFileType("cert.pem")).toBe(false);
@@ -99,6 +114,8 @@ describe("ScopeValidator", () => {
     expect(sv.commandTargetsDeniedPath("echo x > /etc/passwd")).toBe(true);
     expect(sv.commandTargetsDeniedPath("echo x > ../../outside.txt")).toBe(true);
     expect(sv.commandTargetsDeniedPath("echo x > ~/.ssh/authorized_keys")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > C:\\Windows\\Temp\\out.txt")).toBe(true);
+    expect(sv.commandTargetsDeniedPath("echo x > //server/share/out.txt")).toBe(true);
     expect(sv.commandTargetsDeniedPath("echo x > .env")).toBe(true);
     expect(sv.commandTargetsDeniedPath("echo x > logs/out.txt")).toBe(false);
     expect(sv.commandTargetsDeniedPath("cp template.txt dist/out.txt")).toBe(false);
