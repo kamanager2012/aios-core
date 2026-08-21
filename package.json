@@ -25,6 +25,10 @@
       "types": "./kernel/eval.ts",
       "default": "./kernel/eval.ts"
     },
+    "./codex": {
+      "types": "./cli/codex.ts",
+      "default": "./cli/codex.ts"
+    },
     "./policy": {
       "types": "./governor/policy.ts",
       "default": "./governor/policy.ts"
