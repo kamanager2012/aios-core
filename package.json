@@ -1,7 +1,7 @@
 {
   "name": "aios-core",
   "version": "1.0.0",
-  "description": "AIOS Core — Project Agent Runtime. Single-agent software engineering execution kernel with project memory, governance, and rollback.",
+  "description": "AIOS Core — agent reliability kernel with task contracts, evidence gates, deterministic verification, replay, and rollback.",
   "type": "module",
   "main": "kernel/runtime.js",
   "types": "kernel/runtime.ts",
@@ -16,6 +16,10 @@
     "./kernel": {
       "types": "./kernel/schema/index.ts",
       "default": "./kernel/schema/index.ts"
+    },
+    "./reliability": {
+      "types": "./kernel/reliability.ts",
+      "default": "./kernel/reliability.ts"
     },
     "./governor": {
       "types": "./governor/scope.ts",
@@ -41,20 +45,21 @@
     "check": "node scripts/arch-guard.mjs && tsc --noEmit && vitest run"
   },
   "keywords": [
-    "aios",
+    "agent-reliability",
+    "agent-ci",
     "agent",
     "runtime",
-    "governance",
+    "evidence-gate",
+    "regression",
     "project-memory",
-    "software-engineering",
-    "execution-kernel"
+    "software-engineering"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jamesoldman/aios-core.git"
+    "url": "git+https://github.com/kamanager2012/aios-core.git"
   },
-  "homepage": "https://github.com/jamesoldman/aios-core#readme",
+  "homepage": "https://github.com/kamanager2012/aios-core#readme",
   "devDependencies": {
     "@types/node": "^22.0.0",
     "fast-check": "^3.0.0",
