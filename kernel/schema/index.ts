@@ -20,6 +20,52 @@ export type Approval = "AUTO" | "MANUAL";
 
 export type Risk = "low" | "medium" | "high";
 
+// ── Reliability Contract ───────────────────────────────────────────────────
+// A TaskContract defines what evidence must exist before an execution may be
+// accepted. It intentionally does not define how an agent should reason.
+
+export type EvidenceKind =
+  | "build"
+  | "test"
+  | "lint"
+  | "e2e"
+  | "diff"
+  | "invariant"
+  | "policy"
+  | "artifact";
+
+export type EvidenceStatus = "pass" | "fail" | "missing";
+
+export interface EvidenceMetrics {
+  passed?: number;
+  failed?: number;
+  total?: number;
+}
+
+export interface EvidenceItem {
+  kind: EvidenceKind;
+  status: EvidenceStatus;
+  summary: string;
+  source?: string;
+  metrics?: EvidenceMetrics;
+}
+
+export interface TaskContract {
+  version: 1;
+  requiredEvidence: EvidenceKind[];
+  invariants?: string[];
+  acceptance?: {
+    minTestsPassed?: number;
+  };
+}
+
+export interface ReliabilityVerdict {
+  status: "PASS" | "FAIL" | "INCOMPLETE";
+  reasons: string[];
+  missingEvidence: EvidenceKind[];
+  failedEvidence: EvidenceKind[];
+}
+
 // ── Execution Tier ─────────────────────────────────────────────────────────
 // Determines what IO operations are permitted.
 // Tier 0 = dry-run (no IO), Tier 1 = shadow (IO but no commit), Tier 2 = production.
@@ -78,6 +124,7 @@ export interface TaskRequest {
   goal: string;
   project: string;
   context?: string;
+  contract?: TaskContract;
 }
 
 // ── Plan ───────────────────────────────────────────────────────────────────
@@ -99,6 +146,7 @@ export interface Plan {
   approval: Approval;
   createdAt: string;
   frozen: boolean;
+  contract?: TaskContract;
 }
 
 // ── Execution ──────────────────────────────────────────────────────────────
@@ -124,6 +172,7 @@ export interface VerificationReport {
   testsFailed: number;
   logSummary: string;
   autoFixAttempts: number;
+  evidence?: EvidenceItem[];
 }
 
 // ── Reconciliation ─────────────────────────────────────────────────────────
@@ -136,6 +185,7 @@ export interface ReconciliationOutput {
   decision: Decision;
   memoryUpdate: MemoryUpdate;
   reason: string;
+  reliabilityVerdict?: ReliabilityVerdict;
 }
 
 // ── Memory Updates ─────────────────────────────────────────────────────────
