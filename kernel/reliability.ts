@@ -15,6 +15,10 @@ function uniq<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
+function addKindOnce(values: EvidenceKind[], kind: EvidenceKind): void {
+  if (!values.includes(kind)) values.push(kind);
+}
+
 export function evaluateReliability(
   contract: TaskContract,
   evidence: EvidenceItem[],
@@ -43,15 +47,31 @@ export function evaluateReliability(
     }
   }
 
+  // Named invariants are concrete acceptance requirements, not documentation.
+  // Every invariant listed in the contract must have matching structured
+  // evidence with kind="invariant" and id=<invariant-name>.
+  for (const invariant of uniq(contract.invariants ?? [])) {
+    const items = (byKind.get("invariant") ?? []).filter((item) => item.id === invariant);
+    if (items.length === 0 || items.every((item) => item.status === "missing")) {
+      addKindOnce(missingEvidence, "invariant");
+      reasons.push(`required invariant missing: ${invariant}`);
+      continue;
+    }
+    if (items.some((item) => item.status === "fail")) {
+      addKindOnce(failedEvidence, "invariant");
+      reasons.push(`required invariant failed: ${invariant}`);
+    }
+  }
+
   const minTestsPassed = contract.acceptance?.minTestsPassed;
   if (minTestsPassed !== undefined) {
     const testEvidence = byKind.get("test") ?? [];
     const passed = testEvidence.reduce((sum, item) => sum + (item.metrics?.passed ?? 0), 0);
     if (testEvidence.length === 0 || testEvidence.every((item) => item.status === "missing")) {
-      if (!missingEvidence.includes("test")) missingEvidence.push("test");
+      addKindOnce(missingEvidence, "test");
       reasons.push(`test evidence required for minTestsPassed=${minTestsPassed}`);
     } else if (passed < minTestsPassed) {
-      if (!failedEvidence.includes("test")) failedEvidence.push("test");
+      addKindOnce(failedEvidence, "test");
       reasons.push(`tests passed ${passed} < required ${minTestsPassed}`);
     }
   }
