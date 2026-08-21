@@ -2,6 +2,19 @@
   "schemaVersion": 1,
   "profile": "aios-default-policy-pre-hardening",
   "policySemanticsCommit": "aa927b7ef1488133b94bde274121281d6c0b0797",
+  "policy": {
+    "allowedPaths": ["**/*"],
+    "deniedPaths": [".aios/**", "**/.env", "**/secrets/**", "/etc/**", "/usr/**", "/var/**"],
+    "allowedCommands": [
+      "echo", "git", "node", "pnpm", "npm", "vitest", "tsc",
+      "cat", "ls", "pwd", "head", "tail", "wc", "find", "grep",
+      "sed", "awk", "mkdir", "cp", "mv", "diff", "patch",
+      "python3", "cargo", "go", "make"
+    ],
+    "deniedCommands": ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="],
+    "deniedFileTypes": [".pem", ".key", ".p12", ".keystore", ".jks"],
+    "elevatedCommands": []
+  },
   "sourceCorpus": {
     "name": "acs-v1",
     "repository": "kamanager2012/agent-constraint-system",
