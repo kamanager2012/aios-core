@@ -1,66 +1,152 @@
 # AIOS Core
 
-> Project Agent Runtime — 让 AI Agent 长期稳定地开发一个项目。
+> Agent Reliability Kernel — 面向 Coding Agent 的任务契约、证据门、确定性回放、回归与跨 Agent Eval 内核。
 
-> **Part of the [Agent Governance Stack](https://github.com/kamanager2012/agent-constraint-system)** — the execution-kernel layer above
-> [ACS](https://github.com/kamanager2012/agent-constraint-system) (command-level execution gate) and
-> [governor-core](https://github.com/kamanager2012/governor-core) (call-level policy engine).
+AIOS Core 正在把原来的三层 **Agent Governance Stack** 收敛成一个 canonical reliability 项目。目标不是再造 Agent Loop、Sandbox 或模型 Router，而是回答两个更实际的问题：**Agent 声称完成后，能不能用证据证明它真的完成；Agent / 模型 / Policy 升级后，能不能量化回归。**
 
-AIOS Core 是一个**单 Agent 软件工程执行内核**，用项目状态驱动 Agent 的开发行为。
-
-不是操作系统。不是平台。不是多 Agent 编排器。
+项目总览：[Kama Projects](https://kamanager2012.github.io/)。
 
 ## 核心思想
 
-```
-先规划。后审批。再执行。最后验证，落库。
+```text
+Task Contract
+    ↓
+PLAN → EXECUTE → VERIFY
+                  ↓
+             Evidence Gate
+              ↙        ↘
+          COMMIT      ROLLBACK
+              ↓
+        Audit / Replay
+              ↓
+          Regression
+
+Policy Eval Corpus ─→ Agent / Vendor Adapter Observation ─→ Eval Report
 ```
 
-- **项目状态驱动** — Agent 由项目事实和决策驱动，不是上下文
-- **单 Agent** — 任何时刻只有一个执行主体
-- **可回滚** — 任何写操作配套 rollback 路径
-- **项目记忆是核心** — 持久化项目事实和决策；不存聊天、模型思考、向量
+模型越强，不代表不需要验证；只是验证重点从“限制模型每一步”转向“证明最终结果成立，并确认升级没有回归”。底层 sandbox / network / permission 优先使用各 Agent Runtime 原生能力。
+
+## Task Contract
+
+任务契约定义任务被接受前必须具备的最低证据：
+
+```ts
+const contract = {
+  version: 1,
+  requiredEvidence: ["test", "build", "diff"],
+  invariants: ["public-api-stable"],
+  acceptance: {
+    minTestsPassed: 20,
+  },
+};
+```
+
+Verifier 当前会产生 build、test、lint、E2E、diff 的结构化证据；外部 adapter 可以补充 policy、artifact、命名 invariant 等证据。命名 invariant 必须有明确 ID：
+
+```ts
+{
+  kind: "invariant",
+  id: "public-api-stable",
+  status: "pass",
+  summary: "export surface unchanged",
+}
+```
+
+Reliability Gate 输出：
+
+- `PASS` — 所有必需证据和命名 invariant 均满足。
+- `FAIL` — 必需证据存在，但失败或不满足验收阈值。
+- `INCOMPLETE` — 必需证据缺失，不能把任务当成完成。
+
+没有 Task Contract 的旧任务继续保持原有 verify-pass 行为。
 
 ## 架构
 
-```
+```text
 aios-core/
-├── kernel/       # 执行内核: planner + executor + verifier + reconciler + runtime + schema
-├── memory/       # 项目记忆: current/ tasks/ decisions/ architecture/ incidents/ staging/
-├── governor/     # 治理护栏: scope + approval + rollback + audit
-├── cli/          # 入口: aios run | plan | status | context | replay
-└── tests/        # 244 个测试 (25 文件) + shadow/ 真实 I/O E2E
+├── kernel/
+│   ├── runtime.ts       # 状态机唯一驱动器（SSOT）
+│   ├── planner.ts       # Task → 冻结 Plan
+│   ├── executor.ts      # 执行适配边界
+│   ├── verifier.ts      # 结构化验证证据
+│   ├── reliability.ts   # 任务 Evidence Gate + run 回归比较
+│   ├── eval.ts          # vendor-neutral Policy Eval 结果裁决
+│   ├── reconciler.ts    # 唯一确定性 COMMIT / ROLLBACK 决策出口
+│   ├── replay.ts        # 确定性 Audit Replay + 派生 Reliability Verdict
+│   ├── invariant.ts     # 状态不变量
+│   ├── failure.ts       # 失败分类
+│   └── statehash.ts     # 执行指纹 + Hash Chain
+├── governor/            # scope / approval / rollback / audit / limits
+├── memory/              # 项目状态记忆与 staging
+├── shadow/evals/        # 有来源 pin 的 Eval 语料；不进入 npm 发布面
+├── cli/
+└── tests/
 ```
 
-### 状态机
+### 状态机保持冻结
 
-```
+```text
 IDLE → PLAN → EXECUTE → VERIFY → COMMIT → DONE
-                                     │
-                                     │ 失败
-                                     ▼
-                                 ROLLBACK → DONE
+                         │
+                         └──────→ ROLLBACK → DONE
 ```
 
-### 核心模块
+Reliability 重构**不增加任何状态**。Evidence Gate 位于现有 VERIFY → decision 边界内，不制造第二套状态机。
 
-| 模块 | 职责 |
-|------|------|
-| `kernel/runtime.ts` | 状态机唯一驱动器 (SSOT) |
-| `kernel/planner.ts` | 任务理解 + 方案生成 |
-| `kernel/executor.ts` | 改代码、跑命令、生成 diff |
-| `kernel/verifier.ts` | 验证执行结果 |
-| `kernel/reconciler.ts` | 纯函数决策出口（禁止调模型、禁止 IO） |
-| `kernel/invariant.ts` | 状态不变量检查 |
-| `kernel/failure.ts` | 失败分类（transient/deterministic/permission/corruption/resource） |
-| `kernel/statehash.ts` | 执行指纹 + 哈希链（可验证确定性） |
-| `governor/scope.ts` | 路径/命令/文件类型白黑名单 |
-| `governor/approval.ts` | AUTO/MANUAL 两级审批 |
-| `governor/rollback.ts` | git restore / git revert / snapshot 回滚 |
-| `governor/audit.ts` | append-only 审计日志 |
-| `governor/limits.ts` | 终止条件（maxTurns, maxContext, maxRetries） |
-| `memory/index.ts` | 项目记忆存储（append-only + current 可覆盖） |
-| `memory/context.ts` | 上下文窗口管理 |
+## Audit / Replay
+
+形式化约束仍然是：
+
+```text
+state = f(audit_log[0..n])
+```
+
+Reliability Verdict 刻意不再单独写一份可变状态，而是从已经进入 Audit 的 frozen Task Contract 与 Verification Evidence 中确定性重算：
+
+```text
+reliability_verdict = g(frozen_task_contract, verification_evidence)
+```
+
+这样避免“双真相”：Live Reconciler 和 Replay 使用同一个纯函数；同时 contract 与 evidence 已进入 audit/hash-chain 输入，因此裁决依据仍可验证。
+
+## Agent CI Regression
+
+`kernel/reliability.ts` 按稳定 `taskId` 比较 Agent / 模型版本运行结果，输出：
+
+- regression：`PASS → INCOMPLETE/FAIL`、`INCOMPLETE → FAIL`
+- improvement
+- 未变化任务
+- candidate 缺失任务
+- candidate 新增任务
+
+目标是面向真实项目的 **Agent CI**，不是通用 Benchmark 排行榜。
+
+## Vendor-neutral Policy Eval
+
+`kernel/eval.ts` 不执行任何命令，只负责把不同 Agent / Vendor adapter 产出的 observation 与固定 case 进行统一裁决，明确区分：
+
+- `false_allow` — 应拒绝却放行
+- `false_deny` — 应放行却阻止
+- `unexpected_ask` — Runtime 转成人工确认，没有命中固定 expectation
+- `missing_observation` — adapter 没有产出结果
+
+输出 accuracy、danger-block rate、false-positive rate、分类结果以及版本间 PASS→FAIL 回归。
+
+### ACS 语料迁移
+
+`agent-constraint-system` 中真正有长期价值的部分已经开始迁到 `shadow/evals/policy/acs-v1/`：保留 benchmark case、known bypass、false positive 与来源，不复制 ACS runtime。
+
+迁移 gate 已 pin 原仓库 revision，并硬性要求 **105 条**场景全部存在、ID 唯一。源报告里 6 个已知失败继续保留，包括 4 个 bypass 和 2 个合法清理命令 false positive；迁移过程中禁止通过改 expectation 把失败“洗成成功”。
+
+## 原三项目如何收敛
+
+| 原项目 | 在 canonical 项目里保留什么 |
+|---|---|
+| `agent-constraint-system` | benchmark corpus、known bypass / false positive、constraint taxonomy、adapter evidence |
+| `governor-core` | canonical policy 语义、validation / normalization、audit 语义 |
+| `aios-core` | 状态机、证据验证、invariant、failure recovery、replay、rollback、project-state memory |
+
+Codex / Claude / Gemini 等 Runtime 已原生支持的 sandbox、permission、network policy 等能力，优先调用上游，不重做第二套。
 
 ## 安装
 
@@ -73,53 +159,47 @@ npm install
 ## 用法
 
 ```bash
-# 完整流水线
 aios run "fix login bug" --project myapp
-
-# 分步执行（仅 plan/run 已实现；execute/verify/commit 尚未实现）
 aios plan "fix login bug" --project myapp
-
-# 查看状态
 aios status
-
-# 回放
 aios replay --last
 aios replay --task task_042
 ```
 
-## 测试
+现有 CLI 保持兼容；Task Contract 和 Eval API 当前先通过 kernel / package API 暴露，第一轮合并不为了 UI 继续扩大范围。
+
+## 验证
 
 ```bash
-npm test          # 244 个测试（25 文件）
-npm run typecheck # TypeScript 类型检查
+npm run check
 ```
 
-## 项目记忆
-
-只有 COMMIT 能写正式 memory：
-
-| 目录 | 可变性 | 写时机 |
-|------|--------|--------|
-| `current/` | **唯一可覆盖** | 状态推进 |
-| `decisions/` | append-only | 决策落地 |
-| `tasks/` | append-only | 任务完成 |
-| `incidents/` | append-only | 失败复盘 |
+`check` 会执行 architecture guard、TypeScript typecheck、完整 Vitest，以及 Eval corpus 迁移完整性检查。
 
 ## 设计约束
 
-- Reconciler 是**唯一**决策出口，纯函数，禁止调模型、禁止 IO
-- Governor 是护栏不是引擎 — 拦住不该做的，但不驱动该做的
-- staging/snapshot 隔离执行中状态，COMMIT 才 promote 到正式 memory
-- 50-task shadow 测试验证确定性：相同输入 → 相同输出
+- Runtime 是唯一状态机驱动器。
+- Reconciler 是唯一决策出口，保持纯函数：禁止模型调用、禁止 IO。
+- Task Contract 只能让验收更严格，不能绕过原有 verification 失败。
+- 缺少必需证据绝不等于成功。
+- 命名 invariant 必须是真正可验证的 acceptance requirement，不能只是文档字段。
+- Reliability Verdict 必须由 audited inputs 派生，不能维护第二份可漂移真相。
+- Eval corpus 是数据，Vendor 执行逻辑在 adapter 边界之后。
+- 项目记忆只保存项目事实和决策，不保存聊天、模型思考或向量人格记忆。
+- staging / snapshot 隔离执行中状态，只有 COMMIT 才 promote。
 
 ## 不做什么
 
-❌ 多 Agent / Mesh / 工作流编排
-❌ 向量库 / 知识图谱 / 人格记忆
-❌ 预算 / 成本追踪 / 经济系统
-❌ 自动演化 / 云调度
+AIOS Core 不做：
 
-只做：项目记忆、执行、治理、恢复。
+- 新的通用 Agent Loop
+- Multi-Agent Mesh / 通用编排框架
+- 第二套 Sandbox / 网络隔离层
+- 模型 Router
+- 向量记忆 / 人格系统
+- 云调度 / 自动经济系统
+
+目标收窄为：**为真实 Coding Agent 工作提供可靠的执行验收和回归证据。**
 
 ## License
 

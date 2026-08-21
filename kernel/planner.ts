@@ -6,13 +6,13 @@
 
 import type { Plan, TaskRequest, ProjectState, Risk, Approval, PlanStep } from "./schema/index.js";
 
-// ── Planner function signature ─────────────────────────────────────────────
+// ── Planner function signature ───────────────────────────────────────────────
 
 export interface PlannerFn {
   (req: TaskRequest): Promise<Plan>;
 }
 
-// ── Adapter: IO operations the planner needs ───────────────────────────────
+// ── Adapter: IO operations the planner needs ────────────────────────────────
 
 export interface PlannerAdapter {
   readProjectState: (project: string) => Promise<ProjectState>;
@@ -20,7 +20,7 @@ export interface PlannerAdapter {
   now: () => string;
 }
 
-// ── Factory: create a stateless planner function ───────────────────────────
+// ── Factory: create a stateless planner function ────────────────────────────
 
 export function createPlanner(adapter: PlannerAdapter): PlannerFn {
   return async (req: TaskRequest): Promise<Plan> => {
@@ -31,7 +31,7 @@ export function createPlanner(adapter: PlannerAdapter): PlannerFn {
   };
 }
 
-// ── Pure helpers ───────────────────────────────────────────────────────────
+// ── Pure helpers ────────────────────────────────────────────────────────────
 
 function buildPrompt(req: TaskRequest, state: ProjectState): string {
   return [
@@ -66,6 +66,7 @@ function parsePlan(raw: string, req: TaskRequest, now: string): Plan {
     approval,
     createdAt: now,
     frozen: true,
+    ...(req.contract ? { contract: req.contract } : {}),
   };
 }
 

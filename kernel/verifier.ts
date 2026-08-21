@@ -6,7 +6,7 @@
 //
 // Per Charter §3: build + test + lint + e2e; auto-fix is a runtime concern.
 
-import type { ExecutionResult, VerificationReport } from "./schema/index.js";
+import type { EvidenceItem, ExecutionResult, VerificationReport } from "./schema/index.js";
 
 // ── Verifier function signature ────────────────────────────────────────────
 
@@ -38,6 +38,13 @@ export function createVerifier(adapter: VerifierAdapter): VerifierFn {
         testsFailed: 0,
         logSummary: "executor reported failure",
         autoFixAttempts: 0,
+        evidence: [
+          {
+            kind: "diff",
+            status: "missing",
+            summary: "executor failed before verifiable output was produced",
+          },
+        ],
       };
     }
 
@@ -45,6 +52,39 @@ export function createVerifier(adapter: VerifierAdapter): VerifierFn {
     const build = await adapter.runBuild();
     const lint = await adapter.runLint();
     const e2e = await adapter.runE2E();
+
+    const evidence: EvidenceItem[] = [
+      {
+        kind: "test",
+        status: testResult.ok ? "pass" : "fail",
+        summary: testResult.log,
+        metrics: {
+          passed: testResult.passed,
+          failed: testResult.failed,
+          total: testResult.passed + testResult.failed,
+        },
+      },
+      {
+        kind: "build",
+        status: build.ok ? "pass" : "fail",
+        summary: build.log,
+      },
+      {
+        kind: "lint",
+        status: lint.ok ? "pass" : "fail",
+        summary: lint.log,
+      },
+      {
+        kind: "e2e",
+        status: e2e.ok ? "pass" : "fail",
+        summary: e2e.log,
+      },
+      {
+        kind: "diff",
+        status: result.diff.trim().length > 0 ? "pass" : "missing",
+        summary: result.diff.trim().length > 0 ? "execution produced a diff" : "execution produced no diff",
+      },
+    ];
 
     const allPass = build.ok && testResult.ok && lint.ok && e2e.ok;
     return {
@@ -55,6 +95,7 @@ export function createVerifier(adapter: VerifierAdapter): VerifierFn {
       testsFailed: testResult.failed,
       logSummary: [build.log, testResult.log, lint.log, e2e.log].join("\n--\n").slice(-2000),
       autoFixAttempts: 0,
+      evidence,
     };
   };
 }
