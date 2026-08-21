@@ -44,6 +44,8 @@ export interface EvidenceMetrics {
 
 export interface EvidenceItem {
   kind: EvidenceKind;
+  // Stable requirement identifier for named evidence such as invariants or artifacts.
+  id?: string;
   status: EvidenceStatus;
   summary: string;
   source?: string;
@@ -53,6 +55,7 @@ export interface EvidenceItem {
 export interface TaskContract {
   version: 1;
   requiredEvidence: EvidenceKind[];
+  // Each named invariant requires matching kind="invariant", id=<name> evidence.
   invariants?: string[];
   acceptance?: {
     minTestsPassed?: number;
