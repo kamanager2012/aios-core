@@ -21,6 +21,10 @@
       "types": "./kernel/reliability.ts",
       "default": "./kernel/reliability.ts"
     },
+    "./eval": {
+      "types": "./kernel/eval.ts",
+      "default": "./kernel/eval.ts"
+    },
     "./governor": {
       "types": "./governor/scope.ts",
       "default": "./governor/scope.ts"
