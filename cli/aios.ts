@@ -18,8 +18,6 @@ import type { RuntimeAdapter } from "../kernel/adapter.js";
 import { createFallbackProvider, createOpenAIProvider } from "../kernel/model.js";
 import type { ModelProvider, OpenAIConfig } from "../kernel/model.js";
 import { ScopeValidator } from "../governor/scope.js";
-import { AcsClient } from "../governor/acs_client.js";
-import { AcsBridge } from "../governor/acs_bridge.js";
 import { Rollback } from "../governor/rollback.js";
 import { AuditLog } from "../governor/audit.js";
 import { MemoryStore } from "../memory/index.js";
@@ -118,16 +116,14 @@ function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: Execut
     now,
   });
 
-  // ACS-aware governance: scope reads live ACS runtime state, and the
-  // preflight gate rejects plans that ACS would block (locked / out of
-  // scope / high violation pressure). Reads only — no writes to ACS state.
-  const acs = new AcsClient();
-
   return {
     planner: adapter.planner,
     executor: adapter.executor,
     verifier: adapter.verifier,
-    scope: new ScopeValidator({ acs }),
+    // Canonical AIOS runs from its own vendor-neutral policy semantics. Legacy
+    // ACS compatibility remains opt-in through ScopeValidator's compatibility
+    // interface; the default CLI no longer reads ACS runtime state.
+    scope: new ScopeValidator(),
     memory,
     rollback,
     audit,
@@ -224,16 +220,13 @@ async function main(): Promise<void> {
       }
 
       if (last || taskId) {
-        // Replay specific task
         const filtered = taskId
           ? entries.filter((e) => e.taskId === taskId)
           : entries.filter((e) => e.taskId === entries[entries.length - 1]!.taskId);
         const trajectory = replayTask(filtered.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)));
         console.log(JSON.stringify(trajectory, null, 2));
       } else {
-        // Replay all tasks
         const trajectories = replayAll(entries);
-        // Divergence check: compute fingerprint of live entries vs replay
         const liveFp = await computeFullFingerprint(entries);
         const replayEntries = trajectories.flatMap((t) => t.points.map((p) => ({
           seq: p.seq, at: p.at, taskId: p.taskId, phase: p.phase as string,
