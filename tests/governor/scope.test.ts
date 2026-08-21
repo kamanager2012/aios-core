@@ -68,6 +68,30 @@ describe("ScopeValidator", () => {
     expect(sv.validateCommand("sudo apt install")).toBe(false);
   });
 
+  it("denies measured inline-execution and destructive-Git false allows", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validateCommand("python3 -c \"print('x')\"")).toBe(false);
+    expect(sv.validateCommand("git reset --hard HEAD")).toBe(false);
+    expect(sv.validateCommand("git reset --hard origin/main")).toBe(false);
+    expect(sv.validateCommand("git clean -fdx")).toBe(false);
+    expect(sv.validateCommand("git clean -fd")).toBe(false);
+    expect(sv.validateCommand("git clean -f")).toBe(false);
+    expect(sv.validateCommand("git push --force origin main")).toBe(false);
+    expect(sv.validateCommand("git push -f origin main")).toBe(false);
+    expect(sv.validateCommand("git checkout -- .")).toBe(false);
+    expect(sv.validateCommand("git restore -- .")).toBe(false);
+    expect(sv.validateCommand("X=reset; Y=--hard; git $X $Y HEAD")).toBe(false);
+  });
+
+  it("keeps bounded multi-token deny rules from matching safer sibling commands", () => {
+    const sv = new ScopeValidator();
+    expect(sv.validateCommand("git push --force-with-lease origin main")).toBe(true);
+    expect(sv.validateCommand("git restore --staged -- .")).toBe(true);
+    expect(sv.validateCommand("git rebase --abort")).toBe(true);
+    expect(sv.validateCommand("git stash drop")).toBe(true);
+    expect(sv.validateCommand("git branch -D feature-branch")).toBe(true);
+  });
+
   it("rejects command chaining with dangerous second command", () => {
     const sv = new ScopeValidator();
     expect(sv.validateCommand("git status; rm -rf /")).toBe(false);

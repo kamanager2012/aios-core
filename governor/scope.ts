@@ -12,8 +12,9 @@ import { normalizePolicy, type CanonicalPolicy } from "./policy.js";
 export type ScopePolicy = CanonicalPolicy;
 
 export const DEFAULT_POLICY: ScopePolicy = {
-  // Preserve the existing AIOS default profile in this convergence step. The
-  // parser gets stronger without silently replacing product policy choices.
+  // Hardened after the canonical-v1 105-case qualification. This profile only
+  // closes measured false-allows; project-relative host/path semantics remain
+  // unchanged so the historical false-deny set is not "fixed" for the score.
   allowedPaths: ["**/*"],
   deniedPaths: [".aios/**", "**/.env", "**/secrets/**", "/etc/**", "/usr/**", "/var/**"],
   allowedCommands: [
@@ -22,7 +23,23 @@ export const DEFAULT_POLICY: ScopePolicy = {
     "sed", "awk", "mkdir", "cp", "mv", "diff", "patch",
     "python3", "cargo", "go", "make",
   ],
-  deniedCommands: ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="],
+  deniedCommands: [
+    "rm -rf /",
+    "sudo",
+    "shutdown",
+    "reboot",
+    "mkfs",
+    "dd if=",
+    "python3 -c",
+    "git reset --hard",
+    "git clean -fdx",
+    "git clean -fd",
+    "git clean -f",
+    "git push --force",
+    "git push -f",
+    "git checkout -- .",
+    "git restore -- .",
+  ],
   deniedFileTypes: [".pem", ".key", ".p12", ".keystore", ".jks"],
   elevatedCommands: [],
 };
@@ -199,7 +216,10 @@ export class ScopeValidator {
     const words = normalizedSubcommand.split(" ");
     return this.policy.deniedCommands.some((pattern) => {
       const normalizedPattern = pattern.replace(/\s+/g, " ").trim();
-      if (normalizedPattern.includes(" ") || /[^\w-]/.test(normalizedPattern)) {
+      if (normalizedPattern.includes(" ")) {
+        return commandPhraseMatches(normalizedSubcommand, normalizedPattern);
+      }
+      if (/[^\w-]/.test(normalizedPattern)) {
         return normalizedSubcommand.includes(normalizedPattern);
       }
       return words.includes(normalizedPattern) || globMatch(words[0] ?? "", normalizedPattern);
@@ -209,6 +229,26 @@ export class ScopeValidator {
   private matchesAny(value: string, patterns: string[]): boolean {
     return patterns.some((pattern) => globMatch(value, pattern));
   }
+}
+
+/** Match a multi-token deny phrase on command-token boundaries. The old raw
+ * substring rule made `git push --force` also match `--force-with-lease`.
+ * Prefix-style assignment patterns such as `dd if=` intentionally keep their
+ * substring semantics because the value follows the `=` in the same token. */
+export function commandPhraseMatches(command: string, phrase: string): boolean {
+  if (phrase.endsWith("=")) return command.includes(phrase);
+
+  let from = 0;
+  while (from <= command.length - phrase.length) {
+    const index = command.indexOf(phrase, from);
+    if (index < 0) return false;
+    const end = index + phrase.length;
+    const beforeOk = index === 0 || /\s/.test(command[index - 1]!);
+    const afterOk = end === command.length || /\s/.test(command[end]!);
+    if (beforeOk && afterOk) return true;
+    from = index + 1;
+  }
+  return false;
 }
 
 /** Remove quoted literal bodies. Live command substitutions are extracted before
