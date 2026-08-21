@@ -214,33 +214,56 @@ export function findNearestSnapshot(
   return nearest;
 }
 
-// ── Query: reconstruct state at a given point ──────────────────────────────
+// ── Query: reconstruct cumulative state at a given point ──────────────────
+
+function latestField<T>(
+  points: ReplayPoint[],
+  select: (point: ReplayPoint) => T | undefined,
+): T | undefined {
+  for (let index = points.length - 1; index >= 0; index--) {
+    const value = select(points[index]!);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
 export function stateAtPoint(
   entries: AuditEntry[],
   seq: number,
 ): ReplayPoint | undefined {
-  const entry = entries.find((e) => e.seq === seq);
-  if (!entry) return undefined;
+  const target = entries.find((entry) => entry.seq === seq);
+  if (!target) return undefined;
 
-  const point: ReplayPoint = {
-    seq: entry.seq ?? 0,
-    at: entry.at,
-    taskId: entry.taskId,
-    phase: (entry.toPhase ?? entry.phase) as Phase | "IDLE",
+  // Scope reconstruction to the target task and every audited event up to the
+  // requested sequence. Returning only the single target entry would lose
+  // previously established plan/execute/verify state at COMMIT/ROLLBACK.
+  const scoped = entries
+    .filter((entry) => entry.taskId === target.taskId && (entry.seq ?? 0) <= seq)
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  const trajectory = replayTask(scoped);
+  const finalPoint = trajectory.points[trajectory.points.length - 1];
+  if (!finalPoint) return undefined;
+
+  const plan = latestField(trajectory.points, (point) => point.plan);
+  const execResult = latestField(trajectory.points, (point) => point.execResult);
+  const verifyReport = latestField(trajectory.points, (point) => point.verifyReport);
+  const reliabilityVerdict = latestField(trajectory.points, (point) => point.reliabilityVerdict);
+  const decision = latestField(trajectory.points, (point) => point.decision);
+  const snapshotId = latestField(trajectory.points, (point) => point.snapshotId);
+  const limitsUsed = latestField(trajectory.points, (point) => point.limitsUsed);
+  const attempt = latestField(trajectory.points, (point) => point.attempt);
+  const autoFixAttempts = latestField(trajectory.points, (point) => point.autoFixAttempts);
+
+  return {
+    ...finalPoint,
+    ...(plan ? { plan } : {}),
+    ...(execResult ? { execResult } : {}),
+    ...(verifyReport ? { verifyReport } : {}),
+    ...(reliabilityVerdict ? { reliabilityVerdict } : {}),
+    ...(decision ? { decision } : {}),
+    ...(snapshotId ? { snapshotId } : {}),
+    ...(limitsUsed ? { limitsUsed } : {}),
+    ...(attempt !== undefined ? { attempt } : {}),
+    ...(autoFixAttempts !== undefined ? { autoFixAttempts } : {}),
   };
-
-  if (entry.fromPhase && entry.toPhase) {
-    point.transition = { from: entry.fromPhase, to: entry.toPhase };
-  }
-  if (entry.plan) point.plan = entry.plan;
-  if (entry.execResult) point.execResult = entry.execResult;
-  if (entry.verifyReport) point.verifyReport = entry.verifyReport;
-  if (entry.decision) point.decision = entry.decision;
-  if (entry.snapshotId) point.snapshotId = entry.snapshotId;
-  if (entry.limitsUsed) point.limitsUsed = entry.limitsUsed;
-  if (entry.attempt) point.attempt = entry.attempt;
-  if (entry.autoFixAttempts) point.autoFixAttempts = entry.autoFixAttempts;
-
-  return point;
 }
