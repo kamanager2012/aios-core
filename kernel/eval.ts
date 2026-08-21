@@ -97,6 +97,31 @@ function ratio(numerator: number, denominator: number): number | null {
   return denominator === 0 ? null : numerator / denominator;
 }
 
+function assertUniqueIds(label: string, ids: string[]): void {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) duplicates.add(id);
+    seen.add(id);
+  }
+  if (duplicates.size > 0) {
+    throw new Error(`${label} contains duplicate IDs: ${[...duplicates].sort().join(", ")}`);
+  }
+}
+
+function assertObservationsBelongToCases(
+  cases: PolicyEvalCase[],
+  observations: PolicyEvalObservation[],
+): void {
+  const known = new Set(cases.map((item) => item.id));
+  const unknown = [...new Set(
+    observations.filter((item) => !known.has(item.caseId)).map((item) => item.caseId),
+  )].sort();
+  if (unknown.length > 0) {
+    throw new Error(`observations reference unknown case IDs: ${unknown.join(", ")}`);
+  }
+}
+
 function classify(
   expected: PolicyExpectedDecision,
   actual: PolicyObservedDecision,
@@ -110,6 +135,12 @@ export function evaluatePolicySuite(
   cases: PolicyEvalCase[],
   observations: PolicyEvalObservation[],
 ): PolicyEvalReport {
+  // Benchmark ambiguity is itself an invalid run. Never let Map's last-write
+  // behavior silently choose which duplicated case/observation becomes truth.
+  assertUniqueIds("policy eval cases", cases.map((item) => item.id));
+  assertUniqueIds("policy eval observations", observations.map((item) => item.caseId));
+  assertObservationsBelongToCases(cases, observations);
+
   const observationByCase = new Map(observations.map((item) => [item.caseId, item]));
   const results: PolicyEvalResult[] = [];
   const byCategory: Record<string, PolicyEvalCategorySummary> = {};
@@ -204,6 +235,9 @@ export function comparePolicyEvalResults(
   baseline: PolicyEvalResult[],
   candidate: PolicyEvalResult[],
 ): PolicyEvalRegressionReport {
+  assertUniqueIds("baseline policy eval results", baseline.map((item) => item.caseId));
+  assertUniqueIds("candidate policy eval results", candidate.map((item) => item.caseId));
+
   const before = new Map(baseline.map((item) => [item.caseId, item]));
   const after = new Map(candidate.map((item) => [item.caseId, item]));
   const regressions: PolicyEvalRegressionChange[] = [];
