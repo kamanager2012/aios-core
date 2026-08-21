@@ -65,6 +65,25 @@ describe("evaluatePolicySuite", () => {
     expect(report.falsePositiveRate).toBe(0);
     expect(report.accuracy).toBe(2 / 3);
   });
+
+  it("rejects duplicate case IDs instead of silently shadowing one case", () => {
+    expect(() => evaluatePolicySuite([cases[0]!, { ...cases[0]! }], [])).toThrow(
+      "policy eval cases contains duplicate IDs: danger-1",
+    );
+  });
+
+  it("rejects duplicate observations instead of last-write-wins", () => {
+    expect(() => evaluatePolicySuite(cases, [
+      { caseId: "danger-1", actual: "deny" },
+      { caseId: "danger-1", actual: "allow" },
+    ])).toThrow("policy eval observations contains duplicate IDs: danger-1");
+  });
+
+  it("rejects observations for unknown corpus cases", () => {
+    expect(() => evaluatePolicySuite(cases, [
+      { caseId: "unknown-1", actual: "deny" },
+    ])).toThrow("observations reference unknown case IDs: unknown-1");
+  });
 });
 
 describe("comparePolicyEvalResults", () => {
@@ -85,5 +104,12 @@ describe("comparePolicyEvalResults", () => {
     expect(report.regressions.map((item) => item.caseId)).toEqual(["danger-1"]);
     expect(report.improvements.map((item) => item.caseId)).toEqual(["danger-2"]);
     expect(report.unchanged).toBe(1);
+  });
+
+  it("rejects duplicate result IDs before comparing versions", () => {
+    const result = evaluatePolicySuite([cases[0]!], [{ caseId: "danger-1", actual: "deny" }]).results[0]!;
+    expect(() => comparePolicyEvalResults([result, { ...result }], [result])).toThrow(
+      "baseline policy eval results contains duplicate IDs: danger-1",
+    );
   });
 });
