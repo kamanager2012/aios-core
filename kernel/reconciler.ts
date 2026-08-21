@@ -9,7 +9,16 @@
 // Per discipline: the Reconciler MUST NOT call any model.
 // It is a pure deterministic function of its inputs.
 
-import type { Plan, ExecutionResult, VerificationReport, ProjectState, Decision, MemoryUpdate } from "./schema/index.js";
+import type {
+  Plan,
+  ExecutionResult,
+  VerificationReport,
+  ProjectState,
+  Decision,
+  MemoryUpdate,
+  ReliabilityVerdict,
+} from "./schema/index.js";
+import { evaluateReliability } from "./reliability.js";
 
 // ── Input ──────────────────────────────────────────────────────────────────
 
@@ -27,6 +36,27 @@ export interface ReconciliationOutput {
   decision: Decision;
   memoryUpdate: MemoryUpdate;
   reason: string;
+  reliabilityVerdict?: ReliabilityVerdict;
+}
+
+function rollbackForReliability(
+  input: ReconciliationInput,
+  verdict: ReliabilityVerdict,
+): ReconciliationOutput {
+  const taskId = input.projectState.active_task;
+  const detail = verdict.reasons.join("; ");
+  return {
+    decision: "ROLLBACK",
+    memoryUpdate: {
+      appendIncident: {
+        taskId,
+        reason: `reliability ${verdict.status.toLowerCase()}: ${detail}`,
+        at: input.now,
+      },
+    },
+    reason: `reliability gate ${verdict.status.toLowerCase()}: ${detail}`,
+    reliabilityVerdict: verdict,
+  };
 }
 
 // ── Pure reducer ───────────────────────────────────────────────────────────
@@ -50,40 +80,58 @@ export function reconcile(input: ReconciliationInput): ReconciliationOutput {
     };
   }
 
-  // Verify passed → COMMIT
-  if (input.verifyReport.status === "pass") {
-    const taskId = input.projectState.active_task;
+  // Existing verification remains a hard gate. A task contract may only make
+  // acceptance stricter; it never bypasses build/test/lint/e2e failures.
+  if (input.verifyReport.status === "fail") {
+    const incidentTaskId = input.projectState.active_task;
     return {
-      decision: "COMMIT",
+      decision: "ROLLBACK",
       memoryUpdate: {
-        current: { phase: "DONE", active_task: null, last_change: input.now },
-        appendTask: {
-          taskId,
-          status: "completed",
-          decision: "COMMIT",
-          at: input.now,
-        },
-        appendDecision: {
-          decision: "COMMIT",
-          reason: "verify passed",
+        appendIncident: {
+          taskId: incidentTaskId,
+          reason: `verify failed: ${input.verifyReport.logSummary.slice(0, 200)}`,
           at: input.now,
         },
       },
-      reason: "verify passed; promote staging to formal memory",
+      reason: `verify failed (${input.verifyReport.testsFailed} tests failed); rolling back`,
     };
   }
 
-  // Verify failed → ROLLBACK
-  const incidentTaskId = input.projectState.active_task;
-  return {
-    decision: "ROLLBACK",
+  // Contract-aware tasks require structured evidence before COMMIT.
+  // Legacy tasks without a contract preserve the original verify-pass behavior.
+  let reliabilityVerdict: ReliabilityVerdict | undefined;
+  if (input.plan.contract) {
+    reliabilityVerdict = evaluateReliability(
+      input.plan.contract,
+      input.verifyReport.evidence ?? [],
+    );
+    if (reliabilityVerdict.status !== "PASS") {
+      return rollbackForReliability(input, reliabilityVerdict);
+    }
+  }
+
+  // Verify passed (and contract evidence passed, when present) → COMMIT
+  const taskId = input.projectState.active_task;
+  const output: ReconciliationOutput = {
+    decision: "COMMIT",
     memoryUpdate: {
-      appendIncident: {
-        taskId: incidentTaskId,
-        reason: `verify failed: ${input.verifyReport.logSummary.slice(0, 200)}`,
+      current: { phase: "DONE", active_task: null, last_change: input.now },
+      appendTask: {
+        taskId,
+        status: "completed",
+        decision: "COMMIT",
+        at: input.now,
+      },
+      appendDecision: {
+        decision: "COMMIT",
+        reason: reliabilityVerdict ? "verify and reliability evidence passed" : "verify passed",
         at: input.now,
       },
     },
-    reason: `verify failed (${input.verifyReport.testsFailed} tests failed); rolling back`,
+    reason: reliabilityVerdict
+      ? "verify passed; reliability evidence satisfied; promote staging to formal memory"
+      : "verify passed; promote staging to formal memory",
   };
+  if (reliabilityVerdict) output.reliabilityVerdict = reliabilityVerdict;
+  return output;
 }
