@@ -2,9 +2,19 @@
 //
 // Reconstructs complete RuntimeState trajectory from audit log.
 // Deterministic replay: same audit entries → same state trajectory.
+// Reliability verdicts are derived from the frozen plan contract + recorded
+// verification evidence; they are not duplicated as mutable audit state.
 
-import type { Phase, Decision, Plan, ExecutionResult, VerificationReport, PhaseTransition } from "./schema/index.js";
-
+import type {
+  Phase,
+  Decision,
+  Plan,
+  ExecutionResult,
+  VerificationReport,
+  PhaseTransition,
+  ReliabilityVerdict,
+} from "./schema/index.js";
+import { evaluateReliability } from "./reliability.js";
 import type { AuditEntry } from "../governor/audit.js";
 import { upgradeEntry, validateEntryVersion, CURRENT_SCHEMA_VERSION, type VersionedEntry } from "./schema_version.js";
 
@@ -19,6 +29,7 @@ export interface ReplayPoint {
   plan?: Plan;
   execResult?: ExecutionResult;
   verifyReport?: VerificationReport;
+  reliabilityVerdict?: ReliabilityVerdict;
   decision?: Decision;
   snapshotId?: string;
   limitsUsed?: { turns: number; context: number; retries: number };
@@ -34,6 +45,7 @@ export interface ReplayTrajectory {
   transitions: PhaseTransition[];
   finalPhase: Phase | "IDLE";
   finalDecision: Decision | null;
+  finalReliabilityVerdict?: ReliabilityVerdict;
   terminal: boolean;
   totalRetries: number;
   totalAutoFixAttempts: number;
@@ -74,6 +86,9 @@ export function replayTask(rawEntries: AuditEntry[]): ReplayTrajectory {
   const transitions: PhaseTransition[] = [];
   let finalPhase: Phase | "IDLE" = "IDLE";
   let finalDecision: Decision | null = null;
+  let finalReliabilityVerdict: ReliabilityVerdict | undefined;
+  let latestPlan: Plan | undefined;
+  let latestVerifyReport: VerificationReport | undefined;
   let terminal = false;
   let committed = false;
   let rolledBack = false;
@@ -89,14 +104,33 @@ export function replayTask(rawEntries: AuditEntry[]): ReplayTrajectory {
       phase: (entry.toPhase ?? entry.phase) as Phase | "IDLE",
     };
 
-    if (entry.plan) point.plan = entry.plan;
+    if (entry.plan) {
+      point.plan = entry.plan;
+      latestPlan = entry.plan;
+    }
     if (entry.execResult) point.execResult = entry.execResult;
-    if (entry.verifyReport) point.verifyReport = entry.verifyReport;
+    if (entry.verifyReport) {
+      point.verifyReport = entry.verifyReport;
+      latestVerifyReport = entry.verifyReport;
+    }
     if (entry.decision) point.decision = entry.decision;
     if (entry.snapshotId) point.snapshotId = entry.snapshotId;
     if (entry.limitsUsed) point.limitsUsed = entry.limitsUsed;
     if (entry.attempt) point.attempt = entry.attempt;
     if (entry.autoFixAttempts) point.autoFixAttempts = entry.autoFixAttempts;
+
+    // Reliability is derived state. The live reconciler only evaluates a task
+    // contract after the legacy verification gate passes, so replay mirrors
+    // that exact ordering. Persisting the verdict separately would create two
+    // sources of truth that could drift.
+    if (latestPlan?.contract && latestVerifyReport?.status === "pass") {
+      const verdict = evaluateReliability(
+        latestPlan.contract,
+        latestVerifyReport.evidence ?? [],
+      );
+      point.reliabilityVerdict = verdict;
+      finalReliabilityVerdict = verdict;
+    }
 
     if (entry.fromPhase && entry.toPhase) {
       point.transition = { from: entry.fromPhase, to: entry.toPhase };
@@ -131,6 +165,7 @@ export function replayTask(rawEntries: AuditEntry[]): ReplayTrajectory {
     transitions,
     finalPhase,
     finalDecision,
+    ...(finalReliabilityVerdict ? { finalReliabilityVerdict } : {}),
     terminal,
     totalRetries,
     totalAutoFixAttempts,
