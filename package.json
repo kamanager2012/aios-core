@@ -50,7 +50,8 @@
     "kernel/",
     "governor/",
     "memory/",
-    "cli/"
+    "cli/",
+    "scripts/codex-shadow-capture.mjs"
   ],
   "scripts": {
     "arch-guard": "node scripts/arch-guard.mjs",
@@ -58,7 +59,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "node scripts/arch-guard.mjs && tsc --noEmit && vitest run"
+    "check": "node scripts/arch-guard.mjs && tsc --noEmit && vitest run",
+    "codex:shadow-capture": "node scripts/codex-shadow-capture.mjs"
   },
   "keywords": [
     "agent-reliability",
