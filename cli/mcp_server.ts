@@ -28,11 +28,9 @@ interface McpResponse {
   error?: { code: number; message: string; data?: any };
 }
 
-// Default root is unique per process (pid-suffixed): AuditLog recovers its
-// sequence counter from disk asynchronously and fire-and-forget, so sharing a
-// single fixed path across concurrent or rapidly-repeated processes races
-// against that recovery. Set AIOS_MCP_AUDIT_ROOT explicitly to opt into a
-// stable path that survives restarts of a single long-lived server instance.
+// Default root is unique per process (pid-suffixed). AuditLog now waits for
+// seq recovery before the first append, but two processes sharing one directory
+// can still collide on files. Set AIOS_MCP_AUDIT_ROOT to pin a single instance.
 const auditMemory = new MemoryStore({
   root: process.env.AIOS_MCP_AUDIT_ROOT ?? join(tmpdir(), `aios-mcp-audit-${process.pid}`),
 });

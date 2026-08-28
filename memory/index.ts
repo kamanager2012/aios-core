@@ -65,7 +65,15 @@ export class MemoryStore {
   private subdir(name: string): string { return join(this.config.root, name); }
   private async ensureDir(path: string): Promise<void> { await mkdir(path, { recursive: true }); }
 
+  private enforceFileLimit(content: string): void {
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > this.maxFile) {
+      throw new Error(`memory file exceeds maxFileBytes (${bytes} > ${this.maxFile})`);
+    }
+  }
+
   async writeToStaging(path: string, content: string): Promise<void> {
+    this.enforceFileLimit(content);
     const full = join(this.subdir("staging"), path);
     await this.ensureDir(dirname(full));
     await writeFile(full, content, "utf8");
@@ -76,9 +84,19 @@ export class MemoryStore {
   }
 
   async writeToCurrent(path: string, content: string): Promise<void> {
+    this.enforceFileLimit(content);
     const full = join(this.subdir("current"), path);
     await this.ensureDir(dirname(full));
     await writeFile(full, content, "utf8");
+  }
+
+  /** List files in `current/` or a subdirectory. Missing dirs return []. */
+  async listCurrent(relativeDir = ""): Promise<string[]> {
+    try {
+      return await readdir(join(this.subdir("current"), relativeDir));
+    } catch {
+      return [];
+    }
   }
 
   async readCurrent(path: string): Promise<string | undefined> {
@@ -130,32 +148,40 @@ export class MemoryStore {
       console.warn(`[memory] snapshotCurrent: current/ dir not available for task ${taskId}`);
     }
     const path = join(this.subdir("snapshots"), `${id}.json`);
+    const payload = JSON.stringify({ id, taskId, at: now(), current }, null, 2);
+    this.enforceFileLimit(payload);
     await this.ensureDir(dirname(path));
-    await writeFile(path, JSON.stringify({ id, taskId, at: now(), current }, null, 2), "utf8");
+    await writeFile(path, payload, "utf8");
     return { id };
   }
 
   async appendTask(record: MemoryTaskRecord): Promise<void> {
+    const content = JSON.stringify(record, null, 2);
+    this.enforceFileLimit(content);
     this.counters.task++;
     const path = join(this.subdir("tasks"), `task_${String(this.counters.task).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));
-    await writeFile(path, JSON.stringify(record, null, 2), "utf8");
+    await writeFile(path, content, "utf8");
     this.index.tasks.set(record.taskId, record);
   }
 
   async appendDecision(record: MemoryDecisionRecord): Promise<void> {
+    const content = JSON.stringify(record, null, 2);
+    this.enforceFileLimit(content);
     this.counters.decision++;
     const path = join(this.subdir("decisions"), `decision_${String(this.counters.decision).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));
-    await writeFile(path, JSON.stringify(record, null, 2), "utf8");
+    await writeFile(path, content, "utf8");
     this.index.decisions.set(record.id, record);
   }
 
   async appendIncident(record: MemoryIncidentRecord): Promise<void> {
+    const content = JSON.stringify(record, null, 2);
+    this.enforceFileLimit(content);
     this.counters.incident++;
     const path = join(this.subdir("incidents"), `incident_${String(this.counters.incident).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));
-    await writeFile(path, JSON.stringify(record, null, 2), "utf8");
+    await writeFile(path, content, "utf8");
     this.index.incidents.set(record.id, record);
   }
 

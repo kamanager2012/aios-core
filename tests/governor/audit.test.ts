@@ -69,4 +69,32 @@ describe("AuditLog", () => {
     expect(parsed.input).toBe("fix bug");
     expect(parsed.seq).toBe(1);
   });
+
+  it("recovers seq from disk before the first append after restart", async () => {
+    const log1 = new AuditLog({ memory, now: NOW, newId });
+    await log1.append({ at: "t1", taskId: "task-1", phase: "PLAN" });
+    await log1.append({ at: "t2", taskId: "task-1", phase: "EXECUTE" });
+    const first = await memory.readCurrent("audit/entry_000001.json");
+    expect(first).toBeDefined();
+
+    const log2 = new AuditLog({ memory, now: NOW, newId });
+    await log2.append({ at: "t3", taskId: "task-1", phase: "VERIFY" });
+    expect(log2.seq()).toBe(3);
+    const stillFirst = JSON.parse((await memory.readCurrent("audit/entry_000001.json"))!);
+    expect(stillFirst.phase).toBe("PLAN");
+    const third = JSON.parse((await memory.readCurrent("audit/entry_000003.json"))!);
+    expect(third.phase).toBe("VERIFY");
+    expect(third.seq).toBe(3);
+  });
+
+  it("does not assign the same seq to concurrent appends", async () => {
+    const log = new AuditLog({ memory, now: NOW, newId });
+    await Promise.all([
+      log.append({ at: "t1", taskId: "task-1", phase: "PLAN" }),
+      log.append({ at: "t2", taskId: "task-1", phase: "EXECUTE" }),
+      log.append({ at: "t3", taskId: "task-1", phase: "VERIFY" }),
+    ]);
+    const seqs = log.all().map((e) => e.seq);
+    expect(new Set(seqs).size).toBe(3);
+  });
 });

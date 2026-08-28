@@ -62,29 +62,37 @@ export class AuditLog {
   private entries: AuditEntry[] = [];
   private deps: AuditDeps | null = null;
   private _seq = 0;
+  /** Resolves after disk recovery. `append` waits on this so seq cannot restart at 0. */
+  private _ready: Promise<void> = Promise.resolve();
+  /** Serializes appends so two concurrent callers cannot mint the same seq. */
+  private _writeChain: Promise<void> = Promise.resolve();
 
   constructor(deps?: AuditDeps) {
     this.deps = deps ?? null;
-    // Recover _seq from existing audit files on disk to prevent overwrites.
     if (this.deps) {
-      this._recoverSeq().catch(() => {});
+      this._ready = this._recoverSeq();
     }
   }
 
-  /** Scan existing audit files to find the max seq number. */
+  /** Scan `_max_seq` and `audit/entry_*.json` so a missing pointer cannot rewind seq. */
   private async _recoverSeq(): Promise<void> {
     if (!this.deps) return;
+    let recovered = 0;
     try {
       const raw = await this.deps.memory.readCurrent("audit/_max_seq");
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (typeof parsed.seq === "number" && parsed.seq > this._seq) {
-          this._seq = parsed.seq;
-        }
+        if (typeof parsed.seq === "number") recovered = parsed.seq;
       }
     } catch {
-      // No existing seq file — start from 0
+      // No existing seq file — fall through to entry scan
     }
+    const files = await this.deps.memory.listCurrent("audit");
+    for (const name of files) {
+      const match = /^entry_(\d+)\.json$/.exec(name);
+      if (match) recovered = Math.max(recovered, Number(match[1]));
+    }
+    if (recovered > this._seq) this._seq = recovered;
   }
 
   /** Persist current _seq so it survives process restart. */
@@ -96,6 +104,13 @@ export class AuditLog {
   }
 
   async append(entry: AuditEntry): Promise<void> {
+    const run = this._writeChain.then(() => this._appendUnlocked(entry));
+    this._writeChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async _appendUnlocked(entry: AuditEntry): Promise<void> {
+    await this._ready;
     this._seq++;
     const seqEntry = stampEntry({ ...entry, seq: this._seq });
     this.entries.push(seqEntry);

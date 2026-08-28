@@ -152,4 +152,12 @@ describe("MemoryStore", () => {
     expect(taskFiles2).toContain("task_0001.json");
     expect(taskFiles2).toContain("task_0002.json");
   });
+
+  it("rejects writes larger than maxFileBytes", async () => {
+    const tight = new MemoryStore({ root: tmpDir, maxFileBytes: 32 });
+    await expect(tight.writeToCurrent("too-big.json", "x".repeat(80))).rejects.toThrow(/maxFileBytes/);
+    await expect(tight.writeToStaging("too-big.txt", "y".repeat(80))).rejects.toThrow(/maxFileBytes/);
+    const missing = await tight.readCurrent("too-big.json");
+    expect(missing).toBeUndefined();
+  });
 });
