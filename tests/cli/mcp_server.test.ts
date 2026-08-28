@@ -49,4 +49,56 @@ describe('AIOS MCP Server Protocol', () => {
     const parsed = JSON.parse(res.result.content[0].text);
     expect(parsed.status).toBe('PASS');
   });
+
+  it('appends a phase entry into the audit log with aios_record_audit', async () => {
+    const res = await handleMcpMessage({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: {
+        name: 'aios_record_audit',
+        arguments: {
+          taskId: 'task-mcp-test',
+          phase: 'PLAN',
+          note: 'drafted plan for mcp-recorded task'
+        }
+      }
+    });
+    expect(res.error).toBeUndefined();
+    const parsed = JSON.parse(res.result.content[0].text);
+    expect(parsed.taskId).toBe('task-mcp-test');
+    expect(parsed.phase).toBe('PLAN');
+    expect(parsed.result).toBe('drafted plan for mcp-recorded task');
+    expect(typeof parsed.seq).toBe('number');
+  });
+
+  it('records an optional COMMIT/ROLLBACK decision with aios_record_audit', async () => {
+    const res = await handleMcpMessage({
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'tools/call',
+      params: {
+        name: 'aios_record_audit',
+        arguments: {
+          taskId: 'task-mcp-test',
+          phase: 'COMMIT',
+          decision: 'COMMIT'
+        }
+      }
+    });
+    expect(res.error).toBeUndefined();
+    const parsed = JSON.parse(res.result.content[0].text);
+    expect(parsed.decision).toBe('COMMIT');
+  });
+
+  it('rejects an unknown tool name', async () => {
+    const res = await handleMcpMessage({
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'tools/call',
+      params: { name: 'not_a_real_tool', arguments: {} }
+    });
+    expect(res.result).toBeUndefined();
+    expect(res.error?.code).toBe(-32601);
+  });
 });

@@ -233,6 +233,14 @@ AIOS Core 不做：
 
 目标收窄为：**为真实 Coding Agent 工作提供可靠的执行验收和回归证据。**
 
+## 贡献
+
+架构硬限制（`scripts/arch-guard.mjs`）、设计约束和测试约定见 [CONTRIBUTING.md](CONTRIBUTING.md)（英文）。
+
+## 安全
+
+安全问题范围（Evidence Gate 绕过、审计链篡改、replay/reconciler 正确性、scope/policy 解析）和私密报告方式见 [SECURITY.md](SECURITY.md)（英文）。
+
 ## License
 
 MIT

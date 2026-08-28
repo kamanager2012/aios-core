@@ -6,9 +6,13 @@
  */
 
 import * as readline from 'node:readline';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { evaluateReliability } from '../kernel/reliability.js';
-import type { TaskContract, EvidenceItem } from '../kernel/schema/index.js';
+import type { TaskContract, EvidenceItem, Decision } from '../kernel/schema/index.js';
 import { AuditLog } from '../governor/audit.js';
+import { MemoryStore } from '../memory/index.js';
 
 interface McpRequest {
   jsonrpc: '2.0';
@@ -24,7 +28,19 @@ interface McpResponse {
   error?: { code: number; message: string; data?: any };
 }
 
-const auditLog = new AuditLog('/tmp/aios_mcp_audit.jsonl');
+// Default root is unique per process (pid-suffixed): AuditLog recovers its
+// sequence counter from disk asynchronously and fire-and-forget, so sharing a
+// single fixed path across concurrent or rapidly-repeated processes races
+// against that recovery. Set AIOS_MCP_AUDIT_ROOT explicitly to opt into a
+// stable path that survives restarts of a single long-lived server instance.
+const auditMemory = new MemoryStore({
+  root: process.env.AIOS_MCP_AUDIT_ROOT ?? join(tmpdir(), `aios-mcp-audit-${process.pid}`),
+});
+const auditLog = new AuditLog({
+  memory: auditMemory,
+  now: () => new Date().toISOString(),
+  newId: randomUUID,
+});
 
 const TOOLS = [
   {
@@ -47,15 +63,24 @@ const TOOLS = [
   },
   {
     name: 'aios_record_audit',
-    description: 'Append an operation / approval decision into the tamper-evident cryptographic audit chain.',
+    description: 'Append a task phase-transition entry into the tamper-evident, sequence-stamped AIOS audit log (per Charter §7).',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', description: 'Action performed' },
-        details: { type: 'object', description: 'Detailed metadata' },
-        verdict: { type: 'string', enum: ['allow', 'deny', 'ask'] }
+        taskId: { type: 'string', description: 'Task identifier this entry belongs to.' },
+        phase: {
+          type: 'string',
+          enum: ['IDLE', 'PLAN', 'EXECUTE', 'VERIFY', 'COMMIT', 'DONE', 'ROLLBACK'],
+          description: 'Lifecycle phase this entry records.'
+        },
+        decision: {
+          type: 'string',
+          enum: ['COMMIT', 'ROLLBACK'],
+          description: 'Optional COMMIT/ROLLBACK decision associated with this entry.'
+        },
+        note: { type: 'string', description: 'Human-readable summary stored on the entry.' }
       },
-      required: ['action', 'verdict']
+      required: ['taskId', 'phase']
     }
   }
 ];
@@ -103,12 +128,14 @@ export async function handleMcpMessage(msg: McpRequest): Promise<McpResponse> {
     }
 
     if (name === 'aios_record_audit') {
-      const entry = await auditLog.record({
-        action: args.action,
-        verdict: args.verdict,
-        details: args.details || {},
-        timestamp: Date.now()
+      await auditLog.append({
+        at: new Date().toISOString(),
+        taskId: args.taskId,
+        phase: args.phase,
+        ...(args.decision ? { decision: args.decision as Decision } : {}),
+        ...(args.note ? { result: args.note } : {}),
       });
+      const entry = auditLog.bySeq(auditLog.seq());
       return {
         jsonrpc: '2.0',
         id,

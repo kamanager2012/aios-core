@@ -233,6 +233,18 @@ AIOS Core does **not** aim to become:
 
 The target is narrower: **reliable execution acceptance and regression evidence for real coding-agent work.**
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the architectural hard limits
+(`scripts/arch-guard.mjs`), design constraints, and test conventions enforced
+in review and CI.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for what is in scope (Evidence Gate bypass,
+audit-chain tampering, replay/reconciler soundness, scope/policy parsing) and
+how to report a vulnerability privately.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
