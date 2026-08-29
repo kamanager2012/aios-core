@@ -1,10 +1,16 @@
+# 已归档
+
+本仓库已冻结。它不是对外产品，也没有发布到 npm。npm 上的 `aios-core` 属于 [SynkraAI](https://www.npmjs.com/package/aios-core)，不是这个仓库。
+
+当前公开 Outcome：[dsh-community](https://github.com/kamanager2012/dsh-community)。[English](README.md)。
+
+---
+
 # AIOS Core
 
 > Agent Reliability Kernel — 面向 Coding Agent 的任务契约、证据门、确定性回放、回归与跨 Agent Eval 内核。
 
 AIOS Core 正在把原来的三层 **Agent Governance Stack** 收敛成一个 canonical reliability 项目。目标不是再造 Agent Loop、Sandbox 或模型 Router，而是回答两个更实际的问题：**Agent 声称完成后，能不能用证据证明它真的完成；Agent / 模型 / Policy 升级后，能不能量化回归。**
-
-项目总览：[Kama Projects](https://kamanager2012.github.io/)。
 
 ## 核心思想
 

@@ -1,10 +1,16 @@
+# ARCHIVED
+
+This repository is frozen. It is not a product and is not published to npm. The npm package name `aios-core` belongs to [SynkraAI](https://www.npmjs.com/package/aios-core), not this repo.
+
+Canonical public outcome: [`kamanager2012/dsh-community`](https://github.com/kamanager2012/dsh-community). [中文说明](README.zh-CN.md).
+
+---
+
 # AIOS Core
 
 > Agent Reliability Kernel — task contracts, evidence gates, deterministic replay, regression, and vendor-neutral evals for coding agents.
 
 AIOS Core is converging the former three-layer **Agent Governance Stack** into one canonical reliability project. The goal is not to build another agent loop, sandbox, or model router. The goal is to prove whether an agent actually completed a software-engineering task under explicit acceptance conditions, then measure regressions across agent/model/policy versions.
-
-Project overview: [Kama Projects](https://kamanager2012.github.io/).
 
 ## Core idea
 
