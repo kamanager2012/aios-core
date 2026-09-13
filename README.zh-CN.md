@@ -1,11 +1,3 @@
-# 已归档
-
-本仓库已冻结。它不是对外产品，也没有发布到 npm。npm 上的 `aios-core` 属于 [SynkraAI](https://www.npmjs.com/package/aios-core)，不是这个仓库。
-
-当前公开 Outcome：[dsh-community](https://github.com/kamanager2012/dsh-community)。[English](README.md)。
-
----
-
 # AIOS Core
 
 > Agent Reliability Kernel — 面向 Coding Agent 的任务契约、证据门、确定性回放、回归与跨 Agent Eval 内核。
@@ -184,7 +176,11 @@ reliability_verdict = g(frozen_task_contract, verification_evidence)
 
 Codex / Claude / Gemini 等 Runtime 已原生支持的 sandbox、permission、network policy 等能力，优先调用上游，不重做第二套。
 
+两个原项目的完整提交历史保留在本仓 `legacy/governor-core` 与 `legacy/agent-constraint-system` 分支中。
+
 ## 安装
+
+本仓库不发布到 npm；npm 上的 `aios-core` 名称属于 [SynkraAI](https://www.npmjs.com/package/aios-core)，不是这个仓库。
 
 ```bash
 git clone https://github.com/kamanager2012/aios-core.git

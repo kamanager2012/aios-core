@@ -1,11 +1,3 @@
-# ARCHIVED
-
-This repository is frozen. It is not a product and is not published to npm. The npm package name `aios-core` belongs to [SynkraAI](https://www.npmjs.com/package/aios-core), not this repo.
-
-Canonical public outcome: [`kamanager2012/dsh-community`](https://github.com/kamanager2012/dsh-community). [中文说明](README.zh-CN.md).
-
----
-
 # AIOS Core
 
 > Agent Reliability Kernel — task contracts, evidence gates, deterministic replay, regression, and vendor-neutral evals for coding agents.
@@ -184,7 +176,11 @@ The migration gate fixes the source revision and requires all **105** source sce
 
 Native Codex/Claude/Gemini/other runtime security controls should be used where available rather than rebuilding another sandbox or permission engine.
 
+The full commit histories of the former `governor-core` and `agent-constraint-system` repositories are preserved in this repository as the `legacy/governor-core` and `legacy/agent-constraint-system` branches.
+
 ## Install
+
+This repository is not published to npm; the npm package name `aios-core` belongs to [SynkraAI](https://www.npmjs.com/package/aios-core), not this repository.
 
 ```bash
 git clone https://github.com/kamanager2012/aios-core.git

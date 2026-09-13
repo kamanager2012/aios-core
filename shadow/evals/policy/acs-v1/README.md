@@ -9,6 +9,8 @@ Source revision:
 - source directory: `benchmarks/scenarios/`
 - source benchmark report: `benchmarks/RESULTS.md`
 
+The pinned source revision is preserved in this repository as the `legacy/agent-constraint-system` branch.
+
 ## Source baseline
 
 The source report records 105 scenarios, 99 passing and 6 failing, with these visible failures:

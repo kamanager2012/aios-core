@@ -12,6 +12,8 @@ This note records what AIOS Core absorbed from `governor-core` and, equally impo
   - `tests/scope.test.ts`
   - `tests/adversarial.test.ts`
 
+The pinned source revision is preserved in this repository as the `legacy/governor-core` branch.
+
 The migration is semantic, not a source-tree copy. The canonical implementation keeps AIOS's own public interfaces and default policy profile where practical.
 
 ## Absorbed semantics
