@@ -67,6 +67,14 @@ P0 governance, rollback/MCP, hardening, and release rounds.
 - ACS scope uses segment-boundary matching; empty `allowed_dirs` entries
   no longer allow everything.
 
+### Changed (post-1.0.0 candidate, for next tag)
+
+- Dev toolchain upgraded: `vitest@3.2.7→5.1.0`, `madge@8.0.0→7.0.0`.
+  `npm audit` now reports **0 vulnerabilities** (was 10 dev-only).
+  `engines.node` bumped for the Vitest 5 peer line; CI matrix moved
+  from `20.x/22.x` to `22.x/24.x`; `vitest.config.ts` migrated
+  `poolOptions.forks.maxForks` → `maxWorkers`.
+
 ## [Unreleased]
 
 - Legacy byte-identity: `manifest.json` now pins SHA-256 for all six raw
@@ -74,7 +82,4 @@ P0 governance, rollback/MCP, hardening, and release rounds.
   against legacy commit `a8e41fa2`. Byte identity is not claimed (formatter
   differences only).
 - `npm audit` real-machine (via public registry): 13 → 10 after semver-safe
-  `npm audit fix`. Residuals are dev-only (`vitest` critical needs v5,
-  `madge` moderate via `minimatch` needs v7); `files` ships `dist/` only so
-  runtime exposure is zero, but `security-audit.yml` (moderate) will fail
-  until those majors land.
+  `npm audit fix`, then 10 → **0** after `vitest@5`/`madge@7` majors above.
