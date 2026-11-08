@@ -75,7 +75,7 @@ describe("Package publishability", () => {
     expect(pkg.bin.aios).toBe("dist/cli/aios.js");
     expect(pkg.exports["."]?.default).toBe("./dist/kernel/runtime.js");
     expect(pkg.files).toContain("dist/");
-    expect(pkg.engines?.node).toBe(">=20");
+    expect(pkg.engines?.node).toBe(">=22.12");
     expect(existsSync("tsconfig.build.json")).toBe(true);
     expect(existsSync("pnpm-lock.yaml")).toBe(false);
     expect(existsSync("pnpm-workspace.yaml")).toBe(false);

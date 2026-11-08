@@ -4,7 +4,7 @@
   "description": "AIOS Core — agent reliability kernel with task contracts, evidence gates, deterministic verification, replay, and rollback.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
   "main": "dist/kernel/runtime.js",
   "types": "dist/kernel/runtime.d.ts",
@@ -83,8 +83,8 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "fast-check": "^3.0.0",
-    "madge": "^8.0.0",
+    "madge": "^7.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^3.2.7"
+    "vitest": "^5.1.0"
   }
 }
