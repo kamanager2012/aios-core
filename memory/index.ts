@@ -65,6 +65,47 @@ export class MemoryStore {
   private subdir(name: string): string { return join(this.config.root, name); }
   private async ensureDir(path: string): Promise<void> { await mkdir(path, { recursive: true }); }
 
+  private assertSafeRelativePath(path: string): void {
+    if (!path || path.includes("\0")) {
+      throw new Error(`invalid memory path: ${String(path).slice(0, 80)}`);
+    }
+    const normalized = path.replace(/\\/g, "/");
+    if (normalized.startsWith("/") || normalized.startsWith("//") || /^[A-Za-z]:/.test(normalized)) {
+      throw new Error(`memory path must be relative: ${String(path).slice(0, 80)}`);
+    }
+    if (normalized.split("/").includes("..")) {
+      throw new Error(`memory path must not contain ..: ${String(path).slice(0, 80)}`);
+    }
+  }
+
+  private async totalSizeBytes(): Promise<number> {
+    let total = 0;
+    const walk = async (dir: string): Promise<void> => {
+      let entries: import("node:fs").Dirent[] = [];
+      try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        const full = join(dir, e.name);
+        if (e.isDirectory()) await walk(full);
+        else if (e.isFile()) {
+          try { const st = await stat(full); total += st.size; } catch {}
+        }
+      }
+    };
+    await walk(this.config.root);
+    return total;
+  }
+
+  private async enforceLimits(content: string): Promise<void> {
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > this.maxFile) {
+      throw new Error(`memory file exceeds maxFileBytes (${bytes} > ${this.maxFile})`);
+    }
+    const currentTotal = await this.totalSizeBytes();
+    if (currentTotal + bytes > this.maxTotal) {
+      throw new Error(`memory exceeds maxTotalBytes (${currentTotal + bytes} > ${this.maxTotal})`);
+    }
+  }
+
   private enforceFileLimit(content: string): void {
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes > this.maxFile) {
@@ -73,7 +114,8 @@ export class MemoryStore {
   }
 
   async writeToStaging(path: string, content: string): Promise<void> {
-    this.enforceFileLimit(content);
+    this.assertSafeRelativePath(path);
+    await this.enforceLimits(content);
     const full = join(this.subdir("staging"), path);
     await this.ensureDir(dirname(full));
     await writeFile(full, content, "utf8");
@@ -83,15 +125,34 @@ export class MemoryStore {
     try { await rm(this.subdir("staging"), { recursive: true, force: true }); } catch {}
   }
 
+  /** Clear only this task's staging subtree. Other tasks' staging is untouched. */
+  async clearStagingTask(taskId: string): Promise<void> {
+    if (!taskId || taskId.includes("\0") || taskId.includes("..") || taskId.startsWith("/") || taskId.includes("\\")) {
+      throw new Error(`invalid taskId for clearStagingTask: ${String(taskId).slice(0, 80)}`);
+    }
+    try { await rm(join(this.subdir("staging"), taskId), { recursive: true, force: true }); } catch {}
+  }
+
   async writeToCurrent(path: string, content: string): Promise<void> {
-    this.enforceFileLimit(content);
+    this.assertSafeRelativePath(path);
+    await this.enforceLimits(content);
     const full = join(this.subdir("current"), path);
     await this.ensureDir(dirname(full));
     await writeFile(full, content, "utf8");
   }
 
+  /** Exclusive create (fails if exists) — for multi-process seq allocation. */
+  async writeToCurrentExclusive(path: string, content: string): Promise<void> {
+    this.assertSafeRelativePath(path);
+    await this.enforceLimits(content);
+    const full = join(this.subdir("current"), path);
+    await this.ensureDir(dirname(full));
+    await writeFile(full, content, { encoding: "utf8", flag: "wx" });
+  }
+
   /** List files in `current/` or a subdirectory. Missing dirs return []. */
   async listCurrent(relativeDir = ""): Promise<string[]> {
+    if (relativeDir) this.assertSafeRelativePath(relativeDir);
     try {
       return await readdir(join(this.subdir("current"), relativeDir));
     } catch {
@@ -100,6 +161,7 @@ export class MemoryStore {
   }
 
   async readCurrent(path: string): Promise<string | undefined> {
+    this.assertSafeRelativePath(path);
     try { return await readFile(join(this.subdir("current"), path), "utf8"); } catch { return undefined; }
   }
 
@@ -113,8 +175,21 @@ export class MemoryStore {
     await this.ensureDir(currentDir);
     const snapshot = await this.snapshotCurrent(taskId, now);
     const promoted: string[] = [];
-    await this.promoteRecursive(stagingDir, currentDir, "", promoted);
-    await this.clearStaging();
+    const taskDir = join(stagingDir, taskId);
+    let taskDirExists = false;
+    try {
+      const st = await stat(taskDir);
+      taskDirExists = st.isDirectory();
+    } catch {}
+    if (taskDirExists) {
+      // Per-task promotion: only this task's subtree. Other tasks keep staging.
+      await this.promoteRecursive(taskDir, currentDir, "", promoted);
+      await this.clearStagingTask(taskId);
+    } else {
+      // Legacy fallback: files staged without a task prefix (older callers/tests).
+      await this.promoteRecursive(stagingDir, currentDir, "", promoted);
+      await this.clearStaging();
+    }
     return { promoted, snapshotId: snapshot.id };
   }
 
@@ -134,15 +209,32 @@ export class MemoryStore {
     }
   }
 
+  /** Recursively collect files under current/ (relative path -> raw text). */
+  private async collectCurrentRecursive(base: string, out: Map<string, string>): Promise<void> {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = await readdir(base, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = join(base, e.name);
+      const rel = join(base, e.name).slice(this.subdir("current").length).replace(/^\/+/, "");
+      if (e.isDirectory()) await this.collectCurrentRecursive(full, out);
+      else if (e.isFile()) {
+        try {
+          const v = await readFile(full, "utf8");
+          out.set(rel, v);
+        } catch {}
+      }
+    }
+  }
+
   async snapshotCurrent(taskId: string, now: () => string): Promise<{ id: string }> {
     this.counters.snapshot++;
     const id = `snap_${String(this.counters.snapshot).padStart(4, "0")}`;
     const current: Record<string, unknown> = {};
+    const rawFiles = new Map<string, string>();
     try {
-      const files = await readdir(this.subdir("current"));
-      for (const f of files) {
-        const v = await this.readCurrent(f);
-        if (v !== undefined) { try { current[f] = JSON.parse(v); } catch { current[f] = v; } }
+      await this.collectCurrentRecursive(this.subdir("current"), rawFiles);
+      for (const [rel, v] of rawFiles) {
+        try { current[rel] = JSON.parse(v); } catch { current[rel] = { __raw: v }; }
       }
     } catch {
       console.warn(`[memory] snapshotCurrent: current/ dir not available for task ${taskId}`);
@@ -157,7 +249,7 @@ export class MemoryStore {
 
   async appendTask(record: MemoryTaskRecord): Promise<void> {
     const content = JSON.stringify(record, null, 2);
-    this.enforceFileLimit(content);
+    await this.enforceLimits(content);
     this.counters.task++;
     const path = join(this.subdir("tasks"), `task_${String(this.counters.task).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));
@@ -167,7 +259,7 @@ export class MemoryStore {
 
   async appendDecision(record: MemoryDecisionRecord): Promise<void> {
     const content = JSON.stringify(record, null, 2);
-    this.enforceFileLimit(content);
+    await this.enforceLimits(content);
     this.counters.decision++;
     const path = join(this.subdir("decisions"), `decision_${String(this.counters.decision).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));
@@ -177,7 +269,7 @@ export class MemoryStore {
 
   async appendIncident(record: MemoryIncidentRecord): Promise<void> {
     const content = JSON.stringify(record, null, 2);
-    this.enforceFileLimit(content);
+    await this.enforceLimits(content);
     this.counters.incident++;
     const path = join(this.subdir("incidents"), `incident_${String(this.counters.incident).padStart(4, "0")}.json`);
     await this.ensureDir(dirname(path));

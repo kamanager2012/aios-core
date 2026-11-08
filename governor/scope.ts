@@ -31,6 +31,12 @@ export const DEFAULT_POLICY: ScopePolicy = {
     "mkfs",
     "dd if=",
     "python3 -c",
+    "node -e",
+    "node --eval",
+    "node -p",
+    "python3 -m",
+    "python3 -i",
+    "npm exec",
     "git reset --hard",
     "git clean -fdx",
     "git clean -fd",
@@ -103,9 +109,14 @@ export class ScopeValidator {
     if (!this.validatePlan(plan)) return { ok: false, reason: "plan violates local scope policy" };
     if (!this.acs) return { ok: true };
 
-    const acsScope = this.getAcsScope();
+    const acsScope = this.getAcsScope().filter((d) => typeof d === "string" && d.length > 0);
     for (const file of plan.files) {
-      if (!acsScope.some((dir) => file.startsWith(dir))) {
+      const inScope = acsScope.some((dir) => {
+        const clean = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+        if (!clean) return false;
+        return file === clean || file.startsWith(`${clean}/`);
+      });
+      if (!inScope) {
         return { ok: false, reason: `ACS scope violation: ${file} not in ACS allowed directories` };
       }
       if (ACS_DENIED_PATHS.some((protectedPath) => file.includes(protectedPath))) {
@@ -146,14 +157,15 @@ export class ScopeValidator {
   }
 
   validateFileType(path: string): boolean {
-    const lower = path.toLowerCase();
+    const lower = path.trim().toLowerCase();
     return !this.policy.deniedFileTypes.some((ext) => lower.endsWith(ext.toLowerCase()));
   }
 
   // ── Canonical command semantics ────────────────────────────────────────
 
   validateCommand(command: string): boolean {
-    const subcommands = this.splitSubcommands(expandAssignments(command));
+    const expanded = expandAssignments(command);
+    const subcommands = this.splitSubcommands(expanded);
     if (subcommands.length === 0 || this.policy.allowedCommands.length === 0) return false;
 
     for (const raw of subcommands) {
@@ -163,6 +175,14 @@ export class ScopeValidator {
       if (this.matchesDenyCommand(subcommand)) return false;
       const head = subcommand.split(/\s+/)[0] ?? "";
       if (!this.matchesAny(head, this.policy.allowedCommands)) return false;
+    }
+    // Quoted-flag dodge: python3 "-c" / git push "--force" must still deny.
+    // Check an unquoted form head-anchored so echo "rm -rf /" stays allow.
+    const unquotedParts = this.splitSubcommandsUnquoted(expanded);
+    for (const raw of unquotedParts) {
+      const subcommand = stripAssignments(raw.trim());
+      if (!subcommand) continue;
+      if (this.matchesDenyCommandHeadAnchored(subcommand)) return false;
     }
     return true;
   }
@@ -209,6 +229,42 @@ export class ScopeValidator {
       if (part.trim()) out.push(part);
     }
     return out;
+  }
+
+  /** Same split as splitSubcommands but keeps quoted bodies (quotes removed). */
+  private splitSubcommandsUnquoted(command: string): string[] {
+    const out: string[] = [];
+    const substitution = /\$\(([^()]*)\)|`([^`]*)`/g;
+    let match: RegExpExecArray | null;
+    while ((match = substitution.exec(command)) !== null) {
+      const body = match[1] ?? match[2] ?? "";
+      if (body.trim()) out.push(...this.splitSubcommandsUnquoted(body));
+    }
+    const unquoted = command.replace(substitution, " ").replace(/["']/g, "");
+    for (const part of unquoted.split(/\s*(?:&&|\|\||[;|&\n])\s*/)) {
+      if (part.trim()) out.push(part);
+    }
+    return out;
+  }
+
+  private matchesDenyCommandHeadAnchored(subcommand: string): boolean {
+    const normalizedSubcommand = subcommand.replace(/\s+/g, " ").trim();
+    if (!normalizedSubcommand) return false;
+    const words = normalizedSubcommand.split(" ");
+    return this.policy.deniedCommands.some((pattern) => {
+      const normalizedPattern = pattern.replace(/\s+/g, " ").trim();
+      if (normalizedPattern.includes(" ")) {
+        if (normalizedPattern.endsWith("=")) return normalizedSubcommand.startsWith(normalizedPattern);
+        if (!normalizedSubcommand.startsWith(normalizedPattern)) return false;
+        const after = normalizedSubcommand[normalizedPattern.length];
+        return after === undefined || /\s/.test(after);
+      }
+      if (/[^\w-]/.test(normalizedPattern)) {
+        return normalizedSubcommand.startsWith(normalizedPattern);
+      }
+      const head = words[0] ?? "";
+      return head === normalizedPattern || globMatch(head, normalizedPattern);
+    });
   }
 
   private matchesDenyCommand(subcommand: string): boolean {

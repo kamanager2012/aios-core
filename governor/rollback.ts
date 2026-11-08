@@ -7,8 +7,24 @@ import type { MemoryStore } from "../memory/index.js";
 
 export interface RollbackDeps {
   runCommand: (cmd: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+  /** Optional argv runner (execFile, no shell). Preferred over runCommand. */
+  runCommandFile?: (cmd: string, args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
   memory: MemoryStore;
   now: () => string;
+}
+
+// Paths/refs that go into a shell string must be boring. Reject anything
+// with whitespace or shell metacharacters even before choosing a runner.
+function isSafeRestorePath(p: string): boolean {
+  if (!p || p.includes("\0") || /\s/.test(p)) return false;
+  if (/[;|&$><`'"\\*?\[\]{}()!#~]/.test(p)) return false;
+  if (p === "." || p === ".." || p.startsWith("../") || p.startsWith("/")) return false;
+  // Allow alphanumerics, dot, slash, dash, underscore, @, +, colon.
+  return /^[A-Za-z0-9_.\/@+:-]+$/.test(p);
+}
+
+function isSafeCommitHash(h: string): boolean {
+  return /^[0-9a-fA-F]{4,40}$/.test(h);
 }
 
 export interface RollbackResult {
@@ -68,15 +84,27 @@ export class Rollback {
     if (!paths || paths.length === 0) {
       return { ok: true, method: "none", reason: "nothing to restore (no paths provided)" };
     }
-    const target = paths.join(" ");
+    for (const p of paths) {
+      if (!isSafeRestorePath(p)) {
+        return { ok: false, method: "restore", reason: `unsafe path rejected: ${String(p).slice(0, 80)}` };
+      }
+    }
     // `--` guards against paths beginning with "-" being parsed as flags.
-    const r = await this.deps.runCommand(`git restore -- ${target}`);
+    const target = paths.join(" ");
+    const r = this.deps.runCommandFile
+      ? await this.deps.runCommandFile("git", ["restore", "--", ...paths])
+      : await this.deps.runCommand(`git restore -- ${target}`);
     return { ok: r.ok, method: "restore", reason: r.ok ? `restored ${target}` : `restore failed: ${r.stderr}` };
   }
 
   /** Revert a specific commit (git revert). */
   async revert(commitHash: string): Promise<RollbackResult> {
-    const r = await this.deps.runCommand(`git revert --no-edit ${commitHash}`);
+    if (!isSafeCommitHash(commitHash)) {
+      return { ok: false, method: "revert", reason: `unsafe commit hash rejected: ${String(commitHash).slice(0, 80)}` };
+    }
+    const r = this.deps.runCommandFile
+      ? await this.deps.runCommandFile("git", ["revert", "--no-edit", commitHash])
+      : await this.deps.runCommand(`git revert --no-edit ${commitHash}`);
     return { ok: r.ok, method: "revert", reason: r.ok ? `reverted ${commitHash}` : `revert failed: ${r.stderr}` };
   }
 
@@ -89,7 +117,17 @@ export class Rollback {
       const snapshot = JSON.parse(raw);
       if (snapshot.current && typeof snapshot.current === "object") {
         for (const [key, value] of Object.entries(snapshot.current)) {
-          await this.deps.memory.writeToCurrent(key, JSON.stringify(value, null, 2));
+          // New snapshots mark non-JSON files as { __raw: text } to avoid
+          // double-encoding. Legacy snapshots stored raw text as a string.
+          const isRawMarker = value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 1 && "__raw" in (value as Record<string, unknown>);
+          if (isRawMarker) {
+            await this.deps.memory.writeToCurrent(key, String((value as Record<string, unknown>).__raw));
+          } else if (typeof value === "string") {
+            // Legacy raw text: write verbatim (old code JSON.stringify'd it).
+            await this.deps.memory.writeToCurrent(key, value);
+          } else {
+            await this.deps.memory.writeToCurrent(key, JSON.stringify(value, null, 2));
+          }
         }
       }
       return { ok: true, method: "snapshot", reason: `restored from snapshot ${snapshotId}` };

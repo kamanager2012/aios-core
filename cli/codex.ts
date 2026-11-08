@@ -154,6 +154,25 @@ function sorted(values: Set<string>): string[] {
   return [...values].sort();
 }
 
+/** Redact common secret shapes from text that will be persisted. */
+export function redactSecrets(input: string): string {
+  let out = input;
+  // Authorization: Bearer <token>
+  out = out.replace(/Bearer\s+[A-Za-z0-9._\-~+/=]{8,}/gi, "Bearer [REDACTED]");
+  // Flag values: --password hunter2 / --api-key=xxx / --token xxx
+  out = out.replace(/(--(?:password|passwd|api-?key|token|secret)(\s*=\s*|\s+))[^\s'"`]+/gi, "$1[REDACTED]");
+  // URL credentials: scheme://user:pass@host
+  out = out.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  // Well-known token shapes
+  out = out.replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g, "[REDACTED]");
+  out = out.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b/g, "[REDACTED]");
+  out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]");
+  out = out.replace(/\bgh_[A-Za-z0-9]{20,}\b/g, "[REDACTED]");
+  // Key style assignments: api_key=xxx, SECRET: xxx
+  out = out.replace(/\b(?:api[_-]?key|secret|password|passwd|token)\b(\s*[:=]\s*)[^\s'"`,;}\]]+/gi, "$1[REDACTED]");
+  return out;
+}
+
 interface BuildState {
   threadId?: string;
   eventCount: number;
@@ -223,11 +242,13 @@ function observeItem(
 
   switch (type) {
     case "command_execution": {
-      const command = asString(item.command);
-      if (!command) {
+      const rawCommand = asString(item.command);
+      if (!rawCommand) {
         state.malformedItemCount++;
         return;
       }
+      // Command strings are always persisted — redact even without include flags.
+      const command = redactSecrets(rawCommand);
       const output = asString(item.aggregated_output) ?? "";
       const observation: CodexCommandObservation = {
         id,
@@ -237,7 +258,7 @@ function observeItem(
       };
       const exitCode = asFiniteNumber(item.exit_code);
       if (exitCode !== undefined) observation.exitCode = exitCode;
-      if (options.includeCommandOutput) observation.aggregatedOutput = output;
+      if (options.includeCommandOutput) observation.aggregatedOutput = redactSecrets(output);
       state.commands.set(id, observation);
       return;
     }
@@ -290,7 +311,7 @@ function observeItem(
         state.malformedItemCount++;
         return;
       }
-      state.webSearches.set(id, { id, query });
+      state.webSearches.set(id, { id, query: redactSecrets(query) });
       return;
     }
 
@@ -300,7 +321,7 @@ function observeItem(
         state.malformedItemCount++;
         return;
       }
-      state.agentMessages.set(id, { id, text });
+      state.agentMessages.set(id, { id, text: redactSecrets(text) });
       return;
     }
 

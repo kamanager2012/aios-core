@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "stripInternal": false
+  },
+  "include": ["kernel/**/*", "governor/**/*", "memory/**/*", "cli/**/*"],
+  "exclude": ["tests/**", "shadow/**", "dist/**", "node_modules/**"]
+}

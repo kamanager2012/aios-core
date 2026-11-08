@@ -24,8 +24,8 @@ import { MemoryStore } from "../memory/index.js";
 import { buildContext } from "../memory/context.js";
 import { DEFAULT_LIMITS } from "../governor/limits.js";
 import { replayAll, replayTask, findNearestSnapshot } from "../kernel/replay.js";
-import { checkDivergence, computeFullFingerprint } from "../kernel/statehash.js";
-import type { TaskRequest, ProjectState, ExecutionTier } from "../kernel/schema/index.js";
+import { computeFullFingerprint, HashChain, verifyChain } from "../kernel/statehash.js";
+import type { TaskRequest, ProjectState, ExecutionTier, TaskContract } from "../kernel/schema/index.js";
 import type { AuditEntry } from "../governor/audit.js";
 
 const AIOS_ROOT = process.env.AIOS_ROOT ?? process.cwd();
@@ -58,7 +58,7 @@ function resolveModelProvider(modelFlag: string | undefined): ModelProvider {
   return createFallbackProvider();
 }
 
-function parseArgs(argv: string[]): { command: string; goal: string; project: string; autoApprove: boolean; tier: ExecutionTier; taskId: string; last: boolean; model: string | undefined } {
+function parseArgs(argv: string[]): { command: string; goal: string; project: string; autoApprove: boolean; tier: ExecutionTier; taskId: string; last: boolean; model: string | undefined; contractArg: string | undefined } {
   const args = argv.slice(2);
   const command = args[0] ?? "status";
   let goal = "";
@@ -68,6 +68,7 @@ function parseArgs(argv: string[]): { command: string; goal: string; project: st
   let taskId = "";
   let last = false;
   let model: string | undefined;
+  let contractArg: string | undefined;
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === "--project" && args[i + 1]) { project = args[++i]!; }
@@ -76,10 +77,32 @@ function parseArgs(argv: string[]): { command: string; goal: string; project: st
     else if (args[i] === "--task" && args[i + 1]) { taskId = args[++i]!; }
     else if (args[i] === "--last") { last = true; }
     else if (args[i] === "--model" && args[i + 1]) { model = args[++i]!; }
+    else if (args[i] === "--contract" && args[i + 1]) { contractArg = args[++i]!; }
     else if (!args[i]?.startsWith("--")) { goal = args[i]!; }
   }
 
-  return { command, goal, project, autoApprove, tier, taskId, last, model };
+  return { command, goal, project, autoApprove, tier, taskId, last, model, contractArg };
+}
+
+async function loadContract(contractArg: string | undefined): Promise<TaskContract | undefined> {
+  if (!contractArg) return undefined;
+  // Accept either a JSON string or a path to a JSON file.
+  const looksLikePath = contractArg.startsWith(".") || contractArg.startsWith("/") || contractArg.endsWith(".json");
+  if (looksLikePath) {
+    try {
+      const fs = await import("node:fs/promises");
+      const raw = await fs.readFile(contractArg, "utf8");
+      return JSON.parse(raw) as TaskContract;
+    } catch {
+      // Fall through to inline JSON parse attempt.
+    }
+  }
+  try {
+    return JSON.parse(contractArg) as TaskContract;
+  } catch {
+    console.error(`Invalid --contract: not valid JSON and not a readable file: ${contractArg.slice(0, 120)}`);
+    process.exit(1);
+  }
 }
 
 async function readProjectState(project: string): Promise<ProjectState> {
@@ -92,8 +115,9 @@ async function readProjectState(project: string): Promise<ProjectState> {
   }
 }
 
-function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: ExecutionTier, provider: ModelProvider): RuntimeDeps {
+export function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: ExecutionTier, provider: ModelProvider): RuntimeDeps {
   const audit = new AuditLog({ memory, now, newId });
+  const hashChain = new HashChain();
 
   const modelCall = (prompt: string) => {
     console.error(`[aios] model: ${provider.name}`);
@@ -127,6 +151,7 @@ function makeRuntimeDeps(memory: MemoryStore, autoApprove: boolean, tier: Execut
     memory,
     rollback,
     audit,
+    hashChain,
     tier,
     now: adapter.now,
     newId: adapter.newId,
@@ -169,8 +194,41 @@ async function loadAuditEntries(memory: MemoryStore): Promise<AuditEntry[]> {
   return entries;
 }
 
+/** Compare replayed decisions against live audit decisions (not a lossy hash). */
+export function checkReplayConsistency(
+  entries: AuditEntry[],
+  trajectories: import("../kernel/replay.js").ReplayTrajectory[],
+  seq: number,
+): { diverged: boolean; message: string; seq: number; mismatches: string[] } {
+  const mismatches: string[] = [];
+  const sorted = [...entries].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+  // Seq continuity: flag gaps (shared-dir collisions / dropped writes).
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!.seq ?? 0;
+    const cur = sorted[i]!.seq ?? 0;
+    if (cur !== prev + 1) mismatches.push(`seq gap ${prev}->${cur}`);
+  }
+  for (const t of trajectories) {
+    const taskEntries = sorted.filter((e) => e.taskId === t.taskId);
+    const liveDecision = [...taskEntries].reverse().find((e) => e.decision)?.decision ?? null;
+    if (t.finalDecision !== liveDecision) {
+      mismatches.push(`task ${t.taskId}: replay decision ${t.finalDecision ?? "null"} != live ${liveDecision ?? "null"}`);
+    }
+    const hasTerminalPhase = taskEntries.some((e) => ["COMMIT", "ROLLBACK", "DONE"].includes(e.phase));
+    if (hasTerminalPhase && !t.terminal) {
+      mismatches.push(`task ${t.taskId}: terminal phase present but replay terminal=false`);
+    }
+  }
+  return {
+    diverged: mismatches.length > 0,
+    message: mismatches.length ? mismatches.join("; ") : "replay decisions consistent",
+    seq,
+    mismatches,
+  };
+}
+
 async function main(): Promise<void> {
-  const { command, goal, project, autoApprove, tier, taskId, last, model } = parseArgs(process.argv);
+  const { command, goal, project, autoApprove, tier, taskId, last, model, contractArg } = parseArgs(process.argv);
   const memory = new MemoryStore({ root: MEMORY_ROOT });
   const provider = resolveModelProvider(model);
 
@@ -178,10 +236,14 @@ async function main(): Promise<void> {
     case "plan":
     case "run": {
       if (!goal) {
-        console.error("Usage: aios plan|run <goal> --project <name> [--tier 0|1|2] [--model openai|fallback] [--auto-approve]");
+        console.error("Usage: aios plan|run <goal> --project <name> [--tier 0|1|2] [--model openai|fallback] [--auto-approve] [--contract <json|file>]");
         process.exit(1);
       }
-      const request: TaskRequest = { goal, project };
+      const contract = await loadContract(contractArg);
+      if (!contract) {
+        console.error("[aios] warning: legacy task without Task Contract — acceptance is verify-pass only; pass --contract to enforce evidence gate");
+      }
+      const request: TaskRequest = { goal, project, ...(contract ? { contract } : {}) };
       const deps = makeRuntimeDeps(memory, autoApprove, tier, provider);
       const state = await runTask(request, deps);
       console.log(JSON.stringify({
@@ -228,13 +290,7 @@ async function main(): Promise<void> {
       } else {
         const trajectories = replayAll(entries);
         const liveFp = await computeFullFingerprint(entries);
-        const replayEntries = trajectories.flatMap((t) => t.points.map((p) => ({
-          seq: p.seq, at: p.at, taskId: p.taskId, phase: p.phase as string,
-          fromPhase: p.transition?.from, toPhase: p.transition?.to,
-        } as AuditEntry)));
-        const divergence = liveFp
-          ? await checkDivergence(entries, replayEntries, liveFp.seq)
-          : { diverged: false, message: "no entries" };
+        const divergence = checkReplayConsistency(entries, trajectories, liveFp?.seq ?? 0);
         console.log(JSON.stringify({
           trajectories,
           divergence,
@@ -251,4 +307,6 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}

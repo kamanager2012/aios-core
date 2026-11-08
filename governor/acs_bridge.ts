@@ -158,7 +158,14 @@ export class AcsBridge {
     // is read-only, so every planned write is out of scope. (Previously
     // `dirs.length === 0` skipped enforcement entirely, silently disabling
     // the ACS gate whenever the scope file was missing or unparsed.)
-    const outOfScope = plan.files.filter((f) => !status.dirs.some((dir) => f.startsWith(dir)));
+    // Segment-boundary match; empty dirs never match ("" used to allow all).
+    const validDirs = (status.dirs ?? []).filter((d) => typeof d === "string" && d.length > 0);
+    const isInScope = (f: string): boolean => validDirs.some((dir) => {
+      const clean = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+      if (!clean) return false;
+      return f === clean || f.startsWith(`${clean}/`);
+    });
+    const outOfScope = plan.files.filter((f) => !isInScope(f));
     if (outOfScope.length > 0) {
       return `ACS scope violation: ${outOfScope.join(", ")}`;
     }

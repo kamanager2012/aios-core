@@ -43,8 +43,10 @@ Out of scope (report upstream instead):
 | `main` / `master` (latest commit) | Yes |
 | Tagged releases  | Best-effort, evaluate case by case |
 
-AIOS Core does not yet publish stable version branches; treat the tip of
-`master` as the only actively maintained line.
+A `1.0.0` candidate is prepared (see [CHANGELOG.md](CHANGELOG.md)); the
+`v1.0.0` tag is pending maintainer approval and this package is not on npm
+(the npm `aios-core` name belongs to SynkraAI). Until a tag lands, treat
+the tip of `master` as the only actively maintained line.
 
 ## Reporting a Vulnerability
 

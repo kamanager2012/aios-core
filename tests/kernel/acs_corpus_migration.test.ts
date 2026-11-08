@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -20,11 +21,22 @@ describe("ACS v1 corpus migration", () => {
     }
   });
 
-  it("matches the pinned manifest baseline", () => {
+  it("matches the pinned manifest baseline (incl. raw hashes)", () => {
     const manifest = JSON.parse(readFileSync(join(ACS_V1_ROOT, "manifest.json"), "utf8")) as {
       sourceBaseline: { totalScenarios: number; failedScenarioIds: string[] };
       source: { commit: string };
+      rawFilesSha256?: Record<string, string>;
     };
+    if (manifest.rawFilesSha256) {
+      for (const [rel, expected] of Object.entries(manifest.rawFilesSha256)) {
+        const bytes = readFileSync(join(ACS_V1_ROOT, rel), "utf8");
+        // Hash the exact file bytes as read (text round-trip preserves UTF-8).
+        const actual = createHash("sha256").update(bytes, "utf8").digest("hex");
+        expect(actual).toBe(expected);
+      }
+    } else {
+      throw new Error("manifest.rawFilesSha256 missing");
+    }
     const allIds = new Set(ACS_V1_FILES.flatMap((file) => loadLegacyAcsFile(file)).map((item) => item.id));
 
     expect(manifest.sourceBaseline.totalScenarios).toBe(105);

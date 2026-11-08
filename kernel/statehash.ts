@@ -143,17 +143,24 @@ export async function verifyChain(
 // ── Canonical serialization ────────────────────────────────────────────────
 // Deterministic JSON: keys sorted, no whitespace variation.
 
-function canonicalJson(obj: unknown): string {
+export function canonicalJson(obj: unknown): string {
   if (obj === null || obj === undefined) return "null";
-  if (typeof obj === "boolean" || typeof obj === "number" || typeof obj === "string") {
+  if (typeof obj === "boolean" || typeof obj === "string") {
     return JSON.stringify(obj);
+  }
+  if (typeof obj === "number") {
+    // Match JSON.stringify: NaN/Infinity serialize as null.
+    return Number.isFinite(obj) ? JSON.stringify(obj) : "null";
   }
   if (Array.isArray(obj)) {
     return "[" + obj.map(canonicalJson).join(",") + "]";
   }
   if (typeof obj === "object") {
+    // Codepoint sort (locale-independent). Object keys with undefined values
+    // are omitted to match JSON.stringify object semantics.
     const entries = Object.entries(obj as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
       .map(([k, v]) => JSON.stringify(k) + ":" + canonicalJson(v));
     return "{" + entries.join(",") + "}";
   }

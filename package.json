@@ -3,60 +3,62 @@
   "version": "1.0.0",
   "description": "AIOS Core — agent reliability kernel with task contracts, evidence gates, deterministic verification, replay, and rollback.",
   "type": "module",
-  "main": "kernel/runtime.js",
-  "types": "kernel/runtime.ts",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/kernel/runtime.js",
+  "types": "dist/kernel/runtime.d.ts",
   "bin": {
-    "aios": "cli/aios.ts"
+    "aios": "dist/cli/aios.js"
   },
   "exports": {
     ".": {
-      "types": "./kernel/runtime.ts",
-      "default": "./kernel/runtime.ts"
+      "types": "./dist/kernel/runtime.d.ts",
+      "default": "./dist/kernel/runtime.js"
     },
     "./kernel": {
-      "types": "./kernel/schema/index.ts",
-      "default": "./kernel/schema/index.ts"
+      "types": "./dist/kernel/schema/index.d.ts",
+      "default": "./dist/kernel/schema/index.js"
     },
     "./reliability": {
-      "types": "./kernel/reliability.ts",
-      "default": "./kernel/reliability.ts"
+      "types": "./dist/kernel/reliability.d.ts",
+      "default": "./dist/kernel/reliability.js"
     },
     "./eval": {
-      "types": "./kernel/eval.ts",
-      "default": "./kernel/eval.ts"
+      "types": "./dist/kernel/eval.d.ts",
+      "default": "./dist/kernel/eval.js"
     },
     "./codex": {
-      "types": "./cli/codex.ts",
-      "default": "./cli/codex.ts"
+      "types": "./dist/cli/codex.d.ts",
+      "default": "./dist/cli/codex.js"
     },
     "./codex/evidence": {
-      "types": "./cli/codex_evidence.ts",
-      "default": "./cli/codex_evidence.ts"
+      "types": "./dist/cli/codex_evidence.d.ts",
+      "default": "./dist/cli/codex_evidence.js"
     },
     "./policy": {
-      "types": "./governor/policy.ts",
-      "default": "./governor/policy.ts"
+      "types": "./dist/governor/policy.d.ts",
+      "default": "./dist/governor/policy.js"
     },
     "./governor": {
-      "types": "./governor/scope.ts",
-      "default": "./governor/scope.ts"
+      "types": "./dist/governor/scope.d.ts",
+      "default": "./dist/governor/scope.js"
     },
     "./memory": {
-      "types": "./memory/index.ts",
-      "default": "./memory/index.ts"
+      "types": "./dist/memory/index.d.ts",
+      "default": "./dist/memory/index.js"
     }
   },
   "files": [
-    "kernel/",
-    "governor/",
-    "memory/",
-    "cli/",
+    "dist/",
     "scripts/codex-shadow-capture.mjs"
   ],
   "scripts": {
     "arch-guard": "node scripts/arch-guard.mjs",
     "pretest": "node scripts/arch-guard.mjs",
     "typecheck": "tsc --noEmit",
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "node scripts/arch-guard.mjs && tsc --noEmit && vitest run",

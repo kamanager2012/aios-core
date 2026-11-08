@@ -78,11 +78,16 @@ export class AcsClient {
     return task.dirs ?? [];
   }
 
-  /** Check if a path is within ACS scope. */
+  /** Check if a path is within ACS scope (segment-boundary match). */
   isPathInScope(filePath: string): boolean {
-    const dirs = this.getScope();
+    const dirs = this.getScope().filter((d) => typeof d === "string" && d.length > 0);
     if (dirs.length === 0) return false;
-    return dirs.some((dir) => filePath.startsWith(dir));
+    if (!filePath) return false;
+    return dirs.some((dir) => {
+      const clean = dir.endsWith("/") ? dir.slice(0, -1) : dir;
+      if (!clean) return false;
+      return filePath === clean || filePath.startsWith(`${clean}/`);
+    });
   }
 
   /** Get violation events. */

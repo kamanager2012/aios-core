@@ -16,6 +16,7 @@ import type { PlannerFn } from "./planner.js";
 import type { ExecutorFn } from "./executor.js";
 import type { VerifierFn } from "./verifier.js";
 import { ScopeValidator } from "../governor/scope.js";
+import { effectiveApproval } from "../governor/approval.js";
 import { checkLimits, DEFAULT_LIMITS, type Limits } from "../governor/limits.js";
 import type { MemoryStore } from "../memory/index.js";
 import { Rollback } from "../governor/rollback.js";
@@ -98,13 +99,99 @@ async function guardInvariants(
   }
 }
 
+// ── Plan command gate (B2) ────────────────────────────────────────────
+// Plans carry free-text steps + a rollback string (copied verbatim from
+// model output). Runtime must run the same 4 signals the policy eval
+// harness combines (see tests/governor/canonical_policy_hardening.test.ts):
+// validateCommand / isMassDelete / commandTargetsDeniedPath /
+// usesElevatedCommand. Generic non-shell steps ("edit src/a.ts") are
+// deliberately skipped so existing plans are not treated as shell.
+
+function collectPlanCommands(plan: Plan): string[] {
+  const cmds: string[] = [];
+  if (plan.rollback?.trim()) cmds.push(plan.rollback);
+  for (const step of plan.steps) {
+    if (step.action?.trim()) cmds.push(step.action);
+    if (step.action?.trim() && step.target?.trim()) cmds.push(`${step.action} ${step.target}`);
+    if (step.target?.trim() && step.target.trim() !== step.action?.trim()) cmds.push(step.target);
+  }
+  return cmds;
+}
+
+function isShellLike(scope: ScopeValidator, candidate: string): boolean {
+  const trimmed = candidate.trim();
+  if (!trimmed) return false;
+  if (/[;|&$><`\n\r]/.test(trimmed)) return true;
+  if (scope.isMassDelete(trimmed)) return true;
+  const head = trimmed.split(/\s+/)[0] ?? "";
+  if (!head) return false;
+  const dangerous = new Set([
+    "rm", "sudo", "shred", "find", "dd", "sh", "bash", "zsh", "curl", "wget",
+    "shutdown", "reboot", "mkfs", "chmod", "chown",
+  ]);
+  if (dangerous.has(head)) return true;
+  if (scope.policy.allowedCommands.some((p) => head === p || p === head)) return true;
+  if (scope.policy.deniedCommands.some((p) => p.split(/\s+/)[0] === head)) return true;
+  if ((scope.policy.elevatedCommands ?? []).some((p) => head === p)) return true;
+  return false;
+}
+
+function isPathLikeTarget(target: string): boolean {
+  const t = target.trim();
+  if (!t || /\s/.test(t)) return false;
+  if (t.startsWith("(") || t.startsWith("/staging")) return false;
+  if (/[;|&$><`\n\r]/.test(t)) return false;
+  // Plain relative paths (with or without extension) vs verbs like "edit".
+  return t.includes("/") || /\.[a-z0-9]{1,10}$/i.test(t);
+}
+
+export interface PlanCommandCheck {
+  ok: boolean;
+  reason?: string;
+  elevated: boolean;
+}
+
+export function checkPlanCommands(scope: ScopeValidator, plan: Plan): PlanCommandCheck {
+  let elevated = false;
+  for (const candidate of collectPlanCommands(plan)) {
+    if (!isShellLike(scope, candidate)) continue;
+    if (scope.isMassDelete(candidate)) {
+      return { ok: false, reason: `mass-delete command blocked: ${candidate.slice(0, 120)}`, elevated };
+    }
+    if (scope.commandTargetsDeniedPath(candidate)) {
+      return { ok: false, reason: `command write target denied: ${candidate.slice(0, 120)}`, elevated };
+    }
+    if (!scope.validateCommand(candidate)) {
+      return { ok: false, reason: `command not allowed by scope policy: ${candidate.slice(0, 120)}`, elevated };
+    }
+    if (scope.usesElevatedCommand(candidate)) elevated = true;
+  }
+  for (const step of plan.steps) {
+    const t = (step.target ?? "").trim();
+    if (isPathLikeTarget(t) && !scope.validatePath(t)) {
+      return { ok: false, reason: `step target denied by scope policy: ${t.slice(0, 120)}`, elevated };
+    }
+  }
+  return { ok: true, elevated };
+}
+
+function planFiles(state: RuntimeState): string[] {
+  return state.plan?.files ?? [];
+}
+
 export async function runTask(
   request: TaskRequest,
   deps: RuntimeDeps,
 ): Promise<RuntimeState> {
   const limits = deps.limits ?? DEFAULT_LIMITS;
   const maxRetries = deps.maxRetries ?? DEFAULT_LIMITS.maxRetries;
+  if (!Number.isInteger(maxRetries) || maxRetries < 1) {
+    throw new Error(`maxRetries must be an integer >= 1 (got ${String(maxRetries)})`);
+  }
   const maxAutoFix = deps.maxAutoFix ?? 3;
+  if (!Number.isInteger(maxAutoFix) || maxAutoFix < 0) {
+    throw new Error(`maxAutoFix must be an integer >= 0 (got ${String(maxAutoFix)})`);
+  }
 
   const state: RuntimeState = {
     taskId: deps.newId(),
@@ -176,8 +263,35 @@ export async function runTask(
     return state;
   }
 
+  // ── Plan command gate (steps/rollback vs scope) ─────────────────────
+  const commandCheck = checkPlanCommands(deps.scope, state.plan);
+  if (!commandCheck.ok) {
+    state.decision = "ROLLBACK";
+    state.terminal = true;
+    state.reason = commandCheck.reason ?? "plan command rejected by scope";
+    state.failureRecord = classifyFailure({
+      phase: "PLAN", scopeRejected: true, taskId: state.taskId, at: deps.now(),
+    });
+    const ts: PhaseTransition = { from: "PLAN", to: "ROLLBACK", taskId: state.taskId, note: state.reason };
+    state.transitions.push(ts);
+    state.transitions.push({ from: "ROLLBACK", to: "DONE", taskId: state.taskId });
+    await applyRollback(state, deps, state.reason);
+    await guardInvariants(state, ts, deps);
+    await auditAppend(deps, {
+      at: deps.now(), taskId: state.taskId, phase: "ROLLBACK",
+      fromPhase: "PLAN", toPhase: "ROLLBACK",
+      decision: "ROLLBACK", result: state.reason,
+    });
+    return state;
+  }
+
   // ── Approval gate ────────────────────────────────────────────────────
-  if (state.plan.approval === "MANUAL") {
+  // Protected-path plans are forced to MANUAL even when the model wrote
+  // AUTO (effectiveApproval). Elevated commands likewise force MANUAL.
+  const effectiveLevel = commandCheck.elevated
+    ? "MANUAL" as const
+    : effectiveApproval(state.plan);
+  if (effectiveLevel === "MANUAL") {
     const humanOk = await deps.askHuman?.(state.plan);
     if (humanOk !== true) {
       state.decision = "ROLLBACK";
@@ -258,8 +372,8 @@ export async function runTask(
         result: "limits exceeded during execution",
         execResult, limitsUsed: { ...state.limitsUsed },
       });
-      await deps.rollback.restore();
-      await deps.memory.clearStaging();
+      await deps.rollback.restore(planFiles(state));
+      await deps.memory.clearStagingTask(state.taskId);
       state.memoryRolledBack = true;
       state.execResult = execResult;
       return state;
@@ -350,28 +464,74 @@ async function applyCommit(
   const t: PhaseTransition = { from: "VERIFY", to: "COMMIT", taskId: state.taskId };
   state.transitions.push(t);
 
-  const commitResult = await deps.memory.commitStaging(state.taskId, deps.now);
-  state.memoryCommitted = true;
-
-  const taskUpdate = recon.memoryUpdate.appendTask;
-  const decisionUpdate = recon.memoryUpdate.appendDecision;
-
-  if (taskUpdate) {
-    await deps.memory.appendTask({
-      taskId: taskUpdate.taskId ?? state.taskId,
-      status: taskUpdate.status, decision: taskUpdate.decision, at: taskUpdate.at,
+  // Tier 0/1: reconciler COMMIT is a would-commit. Never promote memory.
+  // Undefined tier defaults to 2 (production) for backward compatibility.
+  const tier = deps.tier ?? 2;
+  if (tier < 2) {
+    state.memoryCommitted = false;
+    state.reason = `${recon.reason} (tier ${tier}: memory not promoted)`;
+    await guardInvariants(state, t, deps);
+    state.transitions.push({ from: "COMMIT", to: "DONE", taskId: state.taskId });
+    state.terminal = true;
+    await auditAppend(deps, {
+      at: deps.now(), taskId: state.taskId, phase: "COMMIT",
+      fromPhase: "VERIFY", toPhase: "COMMIT",
+      decision: "COMMIT", result: `tier ${tier} would-commit (memory not promoted)`,
+      limitsUsed: { ...state.limitsUsed },
     });
+    return;
   }
-  if (decisionUpdate) {
-    await deps.memory.appendDecision({
-      id: decisionUpdate.id ?? deps.newId(),
-      decision: decisionUpdate.decision, reason: decisionUpdate.reason, at: decisionUpdate.at,
+
+  // Atomic promotion: any throw mid-promote becomes a ROLLBACK with
+  // file restore + snapshot restore attempt, never half-promoted memory.
+  let commitResult: { promoted: string[]; snapshotId: string } | null = null;
+  try {
+    commitResult = await deps.memory.commitStaging(state.taskId, deps.now);
+    state.memoryCommitted = true;
+
+    const taskUpdate = recon.memoryUpdate.appendTask;
+    const decisionUpdate = recon.memoryUpdate.appendDecision;
+
+    if (taskUpdate) {
+      await deps.memory.appendTask({
+        taskId: taskUpdate.taskId ?? state.taskId,
+        status: taskUpdate.status, decision: taskUpdate.decision, at: taskUpdate.at,
+      });
+    }
+    if (decisionUpdate) {
+      await deps.memory.appendDecision({
+        id: decisionUpdate.id ?? deps.newId(),
+        decision: decisionUpdate.decision, reason: decisionUpdate.reason, at: decisionUpdate.at,
+      });
+    }
+    if (recon.memoryUpdate.current) {
+      await deps.memory.writeToCurrent("project_state.json", JSON.stringify({
+        ...projectState, ...recon.memoryUpdate.current,
+      }, null, 2));
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    state.memoryCommitted = false;
+    state.decision = "ROLLBACK";
+    state.reason = `commit failed: ${msg}`;
+    if (commitResult?.snapshotId) {
+      try { await deps.rollback.fromSnapshot(commitResult.snapshotId); } catch {}
+    }
+    try { await deps.rollback.restore(planFiles(state)); } catch {}
+    try { await deps.memory.clearStagingTask(state.taskId); } catch {}
+    state.memoryRolledBack = true;
+    try {
+      await deps.memory.appendIncident({ id: deps.newId(), taskId: state.taskId, reason: state.reason, at: deps.now() });
+    } catch {}
+    state.transitions.push({ from: "COMMIT", to: "ROLLBACK", taskId: state.taskId, note: state.reason });
+    state.transitions.push({ from: "ROLLBACK", to: "DONE", taskId: state.taskId });
+    state.terminal = true;
+    await auditAppend(deps, {
+      at: deps.now(), taskId: state.taskId, phase: "ROLLBACK",
+      fromPhase: "VERIFY", toPhase: "ROLLBACK",
+      decision: "ROLLBACK", result: state.reason, limitsUsed: { ...state.limitsUsed },
     });
-  }
-  if (recon.memoryUpdate.current) {
-    await deps.memory.writeToCurrent("project_state.json", JSON.stringify({
-      ...projectState, ...recon.memoryUpdate.current,
-    }, null, 2));
+    return;
   }
 
   await guardInvariants(state, t, deps);
@@ -382,7 +542,7 @@ async function applyCommit(
     at: deps.now(), taskId: state.taskId, phase: "COMMIT",
     fromPhase: "VERIFY", toPhase: "COMMIT",
     decision: "COMMIT", result: "committed",
-    snapshotId: commitResult.snapshotId, limitsUsed: { ...state.limitsUsed },
+    snapshotId: commitResult!.snapshotId, limitsUsed: { ...state.limitsUsed },
   });
 }
 
@@ -391,8 +551,8 @@ async function applyRollback(
   deps: RuntimeDeps,
   reason: string,
 ): Promise<void> {
-  await deps.rollback.restore();
-  await deps.memory.clearStaging();
+  await deps.rollback.restore(planFiles(state));
+  await deps.memory.clearStagingTask(state.taskId);
   state.memoryRolledBack = true;
   await deps.memory.appendIncident({ id: deps.newId(), taskId: state.taskId, reason, at: deps.now() });
 }
@@ -413,8 +573,8 @@ async function applyRollbackFromReconciler(
   const t: PhaseTransition = { from: "VERIFY", to: "ROLLBACK", taskId: state.taskId, note: recon.reason };
   state.transitions.push(t);
 
-  await deps.rollback.restore();
-  await deps.memory.clearStaging();
+  await deps.rollback.restore(planFiles(state));
+  await deps.memory.clearStagingTask(state.taskId);
   state.memoryRolledBack = true;
 
   const incidentUpdate = recon.memoryUpdate.appendIncident;
