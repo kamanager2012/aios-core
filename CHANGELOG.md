@@ -69,6 +69,9 @@ P0 governance, rollback/MCP, hardening, and release rounds.
 
 ### Changed (post-1.0.0 candidate, for next tag)
 
+- License tightened: `MIT` → `Apache-2.0` (patent grant + retaliation).
+  `LICENSE` replaced, `NOTICE` added, `package.json`/`package-lock.json`
+  roots and `README`/`README.zh-CN` updated.
 - Dev toolchain upgraded: `vitest@3.2.7→5.1.0`, `madge@8.0.0→7.0.0`.
   `npm audit` now reports **0 vulnerabilities** (was 10 dev-only).
   `engines.node` bumped for the Vitest 5 peer line; CI matrix moved

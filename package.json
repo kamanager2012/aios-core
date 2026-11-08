@@ -51,6 +51,8 @@
   },
   "files": [
     "dist/",
+    "LICENSE",
+    "NOTICE",
     "scripts/codex-shadow-capture.mjs"
   ],
   "scripts": {
@@ -74,7 +76,7 @@
     "project-memory",
     "software-engineering"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kamanager2012/aios-core.git"

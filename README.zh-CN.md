@@ -245,7 +245,7 @@ AIOS Core 不做：
 
 ## License
 
-MIT
+Apache-2.0 — 见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)
 
 ---
 
