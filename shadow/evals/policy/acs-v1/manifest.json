@@ -34,6 +34,14 @@
     "raw/git_destructive.json",
     "raw/self_protect.json"
   ],
+  "rawFilesSha256": {
+    "raw/bash_dangerous.json": "fc8303330f1d89c95a0f84db1bfbeee56d48f5bb3e0a3a7dd48456edc09c72c3",
+    "raw/bypass_attempts.json": "8f9aa233c137bac47c60fd03380acbd161296a9deceffd33b3d073feff78a0ef",
+    "raw/false_positive.json": "e667bf5e57a055bea8ace9999425f37200891f26c7fd300fc2b025647a1d90ad",
+    "raw/filesystem_write.json": "153ff1ce169d75406d8b6ecb84bffabd4474ada8a38408f5d91b25e2823cd51c",
+    "raw/git_destructive.json": "8595cf8a2c0a3a4a2262ae1e0cd0d0e5e080d1acdf0facae56a906883ee3df00",
+    "raw/self_protect.json": "29ead8cb1237ec423048cb4cade0b475c5d1f8b1d38800fc604d2e3953a3082f"
+  },
   "normalization": {
     "block": "deny",
     "allow": "allow",

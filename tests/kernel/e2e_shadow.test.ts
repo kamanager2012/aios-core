@@ -127,7 +127,8 @@ describe("E2E: Full pipeline with real applyPatch", () => {
     const state = await runTask({ goal: "full-pipe", project: "e2e" }, deps);
     expect(state.decision).toBe("COMMIT");
     expect(state.terminal).toBe(true);
-    expect(state.memoryCommitted).toBe(true);
+    // SPEC: shadow adapter is Tier 1 — would-commit, no memory promotion.
+    expect(state.memoryCommitted).toBe(false);
     expect(state.execResult).toBeDefined();
     expect(state.execResult!.status).toBe("succeeded");
   });

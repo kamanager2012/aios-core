@@ -68,8 +68,16 @@ const INVARIANTS: { name: string; check: InvariantFn }[] = [
     check: (state, _transition) => {
       if (state.decision !== null && state.memoryUpdate === null && state.terminal) {
         // Terminal state with decision but no reconciler output
-        // Exception: scope/approval rejections set decision directly
-        if (state.reason !== "plan rejected by scope" && state.reason !== "manual approval denied") {
+        // Exception: scope/command/approval rejections at PLAN set
+        // decision directly (they never reach the reconciler).
+        const earlyGate =
+          state.reason === "plan rejected by scope" ||
+          state.reason === "manual approval denied" ||
+          state.reason.startsWith("plan rejected") ||
+          state.reason.startsWith("mass-delete") ||
+          state.reason.startsWith("command ") ||
+          state.reason.startsWith("step target");
+        if (!earlyGate) {
           return {
             invariant: "DECISION_FROM_RECONCILER",
             message: `Terminal decision=${state.decision} with no memoryUpdate and reason="${state.reason}"`,

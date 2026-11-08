@@ -88,7 +88,9 @@ function verifyConsistency(liveState: RuntimeState, audit: AuditLog): void {
   expect(trajectory.terminal).toBe(liveState.terminal);
 
   // Commit/rollback must match
-  expect(trajectory.committed).toBe(liveState.memoryCommitted);
+  // Replay sees phase COMMIT; live memoryCommitted may be false for tier 0/1
+  // (would-commit: reconciler says COMMIT but runtime does not promote).
+  expect(trajectory.committed).toBe(liveState.decision === "COMMIT");
   expect(trajectory.rolledBack).toBe(liveState.memoryRolledBack);
 
   // Replay transitions must be a subset of live transitions
@@ -139,6 +141,9 @@ describe("Pipeline: Tier 0 dry-run", () => {
     const deps = makeTier0Deps();
     const state = await runTask({ goal: "dry-run test", project: "aios" }, deps);
     expect(state.decision).toBe("COMMIT");
+    // SPEC: Tier 0 is dry-run — reconciler would-commit, memory never promoted.
+    expect(state.memoryCommitted).toBe(false);
+    expect(memory.count().tasks).toBe(0);
     verifyConsistency(state, deps.audit);
   });
 });
@@ -148,6 +153,9 @@ describe("Pipeline: Tier 1 shadow", () => {
     const deps = makeTier1Deps();
     const state = await runTask({ goal: "shadow test", project: "aios" }, deps);
     expect(state.decision).toBe("COMMIT");
+    // SPEC: Tier 1 is shadow — staging only, no commit promotion.
+    expect(state.memoryCommitted).toBe(false);
+    expect(memory.count().tasks).toBe(0);
     verifyConsistency(state, deps.audit);
   });
 
@@ -219,7 +227,7 @@ describe("Pipeline: multi-task closed loop", () => {
       const match = trajectories.find((t) => t.taskId === state.taskId);
       expect(match).toBeDefined();
       expect(match!.finalDecision).toBe(state.decision);
-      expect(match!.committed).toBe(state.memoryCommitted);
+      expect(match!.committed).toBe(state.decision === "COMMIT");
       expect(match!.rolledBack).toBe(state.memoryRolledBack);
       expect(match!.terminal).toBe(state.terminal);
     }

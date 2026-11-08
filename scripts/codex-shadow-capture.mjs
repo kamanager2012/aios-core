@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -62,7 +63,11 @@ function listWorkspaceEntries(root) {
     for (const name of readdirSync(dir).sort()) {
       const full = join(dir, name);
       const relative = prefix ? `${prefix}/${name}` : name;
-      const stat = statSync(full);
+      const stat = lstatSync(full);
+      if (stat.isSymbolicLink()) {
+        entries.push({ path: relative, type: "symlink", size: 0 });
+        continue;
+      }
       entries.push({ path: relative, type: stat.isDirectory() ? "directory" : "file", size: stat.size });
       if (stat.isDirectory()) walk(full, relative);
     }
@@ -152,6 +157,7 @@ function main() {
     encoding: "utf8",
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
   });
   if (versionProbe.error || versionProbe.status !== 0) {
     console.error(`unable to execute Codex binary: ${args.codex}`);
@@ -191,6 +197,7 @@ function main() {
     encoding: "utf8",
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
+    timeout: 300_000,
     maxBuffer: 16 * 1024 * 1024,
   });
   const completedAt = new Date().toISOString();

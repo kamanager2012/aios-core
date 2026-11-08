@@ -111,14 +111,34 @@ export class AuditLog {
 
   private async _appendUnlocked(entry: AuditEntry): Promise<void> {
     await this._ready;
-    this._seq++;
-    const seqEntry = stampEntry({ ...entry, seq: this._seq });
-    this.entries.push(seqEntry);
-    if (this.deps) {
-      const path = `audit/entry_${String(this._seq).padStart(6, "0")}.json`;
-      await this.deps.memory.writeToCurrent(path, JSON.stringify(seqEntry, null, 2));
-      await this._persistSeq();
+    if (!this.deps) {
+      this._seq++;
+      const seqEntry = stampEntry({ ...entry, seq: this._seq });
+      this.entries.push(seqEntry);
+      return;
     }
+    // Multi-process safety: seq file is created with wx so two processes
+    // sharing one dir cannot both mint the same seq. On EEXIST, resync from
+    // disk and retry (bounded).
+    for (let attempt = 0; attempt < 20; attempt++) {
+      this._seq++;
+      const seqEntry = stampEntry({ ...entry, seq: this._seq });
+      const path = `audit/entry_${String(this._seq).padStart(6, "0")}.json`;
+      try {
+        await this.deps.memory.writeToCurrentExclusive(path, JSON.stringify(seqEntry, null, 2));
+        this.entries.push(seqEntry);
+        await this._persistSeq();
+        return;
+      } catch (err: any) {
+        if (err?.code === "EEXIST") {
+          // Another process won this seq. Resync and retry.
+          await this._recoverSeq();
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error("audit append: seq contention after 20 retries");
   }
 
   all(): AuditEntry[] {
